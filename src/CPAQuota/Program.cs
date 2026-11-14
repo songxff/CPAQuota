@@ -9,9 +9,10 @@ using System.Windows.Forms;
 
 namespace CpaTaskbar {
  public sealed class CommandHost:NativeWindow,IDisposable{
+  public static string InstanceCaption{get{return "CPAQuotaTaskbar."+J.Hash(Application.ExecutablePath.ToLowerInvariant());}}
   public static readonly int OpenMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Open.Settings.v1"),ExitMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Exit.v1");
   readonly Action open,exit;
-  public CommandHost(Action show,Action close){open=show;exit=close;CreateHandle(new CreateParams{Caption="CPAQuotaTaskbarCommandHost",Style=unchecked((int)0x80000000),ExStyle=0x80});}
+  public CommandHost(Action show,Action close){open=show;exit=close;CreateHandle(new CreateParams{Caption=InstanceCaption,Style=unchecked((int)0x80000000),ExStyle=0x80});}
   protected override void WndProc(ref Message m){if(m.Msg==OpenMessage){open();return;}if(m.Msg==ExitMessage){exit();return;}base.WndProc(ref m);}
   public void Dispose(){DestroyHandle();}
  }
@@ -103,7 +104,7 @@ namespace CpaTaskbar {
   }
   void WriteStatus(){
    try{lastStatus=J.Now;Directory.CreateDirectory(Path.Combine(AppConfig.Folder,"data"));var s=service.State;var a=Look.Focus(s,Config);
-    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version="0.5.0",pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode},accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
+    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version="0.6.0",pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode},accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
    catch{}
   }
   protected override void ExitThreadCore(){
@@ -126,18 +127,27 @@ namespace CpaTaskbar {
    try{Native.SetProcessDpiAwarenessContext(new IntPtr(-4));}catch{}
    Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
    try{
-    if(args.Length>1&&args[0]=="--self-test"){SelfTests.Run(args[1]);return 0;}
-    if(args.Length>1&&args[0]=="--render-preview"){SelfTests.Render(args[1]);return 0;}
-    if(args.Length>1&&args[0]=="--inspect-shell"){File.WriteAllText(args[1],J.Json(SelfTests.Shell()));return 0;}
+    if(args.Length>1&&args[0]=="--inspect-shell"){File.WriteAllText(args[1],J.Json(ShellDiagnostics.Capture()));return 0;}
+    if(args.Contains("--uninstall-cleanup")){
+     IntPtr host=Native.FindWindow(null,CommandHost.InstanceCaption);
+     if(host!=IntPtr.Zero)Native.PostMessage(host,CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);
+     using(var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true)){
+      string expected="\""+Application.ExecutablePath+"\" --background";
+      if(key!=null&&String.Equals(key.GetValue("CPAQuotaTaskbar") as string,expected,StringComparison.OrdinalIgnoreCase))key.DeleteValue("CPAQuotaTaskbar",false);
+     }
+     return 0;
+    }
+    if(args.Length>1&&args[0]=="--inspect-storage"){
+     AppConfig.InitializeStorage();File.WriteAllText(args[1],J.Json(new{folder=AppConfig.Folder,portable=String.Equals(Path.GetFullPath(AppConfig.Folder).TrimEnd(Path.DirectorySeparatorChar),Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar),StringComparison.OrdinalIgnoreCase)}));return 0;
+    }
     if(args.Contains("--exit")){Native.PostMessage(new IntPtr(0xffff),CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
     bool created;using(var mutex=new Mutex(true,@"Local\CPAQuotaTaskbar."+System.Security.Principal.WindowsIdentity.GetCurrent().User.Value,out created)){
      if(!created){Native.PostMessage(new IntPtr(0xffff),CommandHost.OpenMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
      Application.ThreadException+=(s,e)=>Log("界面发生异常，可退出后重新启动。");
-     var c=AppConfig.Load();Application.Run(new TaskbarApp(c));GC.KeepAlive(mutex);
+     AppConfig.InitializeStorage();var c=AppConfig.Load();Application.Run(new TaskbarApp(c));GC.KeepAlive(mutex);
     }
     return 0;
    }catch(Exception e){
-    if(args.Length>1&&args[0]=="--self-test"){File.WriteAllText(args[1],J.Json(new{passed=false,error=e.ToString()}));return 1;}
     Log(e.Message);MessageBox.Show("CPA状态栏启动失败："+e.Message,"CPA 状态栏",MessageBoxButtons.OK,MessageBoxIcon.Error);return 1;
    }
   }

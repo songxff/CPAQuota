@@ -1,0 +1,56 @@
+﻿<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+ <Package Name="CPAQuota" Manufacturer="songxff" Version="$(var.Version)" UpgradeCode="8D17820E-CBB2-44E1-B9B2-9B52E68658DB" Scope="perUser" InstallerVersion="500" Language="2052">
+  <MajorUpgrade DowngradeErrorMessage="已安装较新版本的 CPAQuota。" />
+  <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+  <Property Id="INSTALLFOLDER" Secure="yes">
+   <RegistrySearch Id="SavedInstallFolder" Root="HKCU" Key="Software\CPAQuota\Installer" Name="InstallPath" Type="raw" Bitness="always32" />
+  </Property>
+  <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="both" />
+  <Property Id="ARPHELPLINK" Value="https://github.com/songxff/CPAQuota" />
+  <Icon Id="ProductIcon" SourceFile="$(var.AppIcon)" />
+  <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+  <Property Id="NETFRAMEWORK48">
+   <RegistrySearch Id="FrameworkRelease" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="raw" Bitness="always32" />
+  </Property>
+  <Launch Condition='Installed OR NETFRAMEWORK48 &gt;= "#528040"' Message="CPAQuota 需要 .NET Framework 4.8 或更高版本。请安装后重试。" />
+  <StandardDirectory Id="LocalAppDataFolder">
+   <Directory Id="UserPrograms" Name="Programs">
+    <Directory Id="INSTALLFOLDER" Name="CPAQuota">
+     <Component Id="ApplicationFiles" Guid="A2D83AE1-13F4-4C65-8DF0-0327B34A2F62">
+      <File Id="MainExecutable" Source="$(var.AppExe)" Name="CPAQuota.exe" />
+      <File Id="InstalledReadme" Source="$(var.Readme)" Name="README.txt" />
+      <RegistryValue Root="HKCU" Key="Software\CPAQuota\Installer" Name="Version" Type="string" Value="$(var.Version)" KeyPath="yes" />
+     </Component>
+    </Directory>
+   </Directory>
+  </StandardDirectory>
+  <StandardDirectory Id="ProgramMenuFolder">
+   <Directory Id="ProgramMenuGroup" Name="CPAQuota">
+    <Component Id="StartMenuShortcut" Guid="*">
+     <Shortcut Id="ApplicationShortcut" Name="CPAQuota" Target="[INSTALLFOLDER]CPAQuota.exe" WorkingDirectory="INSTALLFOLDER" Icon="ProductIcon" />
+     <Shortcut Id="UninstallShortcut" Name="卸载 CPAQuota" Target="[SystemFolder]msiexec.exe" Arguments="/x [ProductCode]" />
+     <RemoveFolder Id="RemoveProgramMenuGroup" On="uninstall" />
+     <RegistryValue Root="HKCU" Key="Software\CPAQuota\Installer" Name="InstallPath" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+    </Component>
+   </Directory>
+  </StandardDirectory>
+  <Feature Id="MainFeature" Title="CPAQuota" Level="1">
+   <ComponentRef Id="ApplicationFiles" />
+   <ComponentRef Id="StartMenuShortcut" />
+  </Feature>
+  <CustomAction Id="CleanupUserRegistration" FileRef="MainExecutable" ExeCommand="--uninstall-cleanup" Execute="immediate" Return="ignore" />
+  <InstallExecuteSequence>
+   <Custom Action="CleanupUserRegistration" Before="RemoveFiles" Condition='Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+  </InstallExecuteSequence>
+  <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+  <UI>
+   <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="100" Condition="NOT Installed" />
+   <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="100" Condition="1" />
+   <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+  </UI>
+  <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="启动 CPAQuota" />
+  <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+  <CustomAction Id="LaunchApplication" FileRef="MainExecutable" ExeCommand="" Execute="immediate" Return="asyncNoWait" />
+ </Package>
+</Wix>

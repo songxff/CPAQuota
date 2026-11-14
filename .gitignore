@@ -18,3 +18,7 @@
 *-report.json
 desktop-settings*
 connections*.json
+/.wix/
+*.msi
+*.wixpdb
+/portable.flag

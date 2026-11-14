@@ -264,6 +264,25 @@ namespace CpaTaskbar {
      state.Quotas["example"].Windows[0].ResetAt=J.Now+59000;strip.RefreshClock();Check(invalidations>0,"changed clock refreshes");
     }
    });
+   test("安装版与便携版配置目录分离，兼容旧版同目录配置",()=>{
+    string temp=Path.Combine(Path.GetDirectoryName(Path.GetFullPath(report)),"storage-"+Guid.NewGuid().ToString("N"));
+    string exe=Path.Combine(temp,"app"),profile=Path.Combine(temp,"profile");
+    Directory.CreateDirectory(exe);
+    try{
+     Check(AppConfig.ResolveFolder(exe,profile)==Path.Combine(profile,"CPAQuota"),"installed profile storage");
+     File.WriteAllText(Path.Combine(exe,"portable.flag"),"portable");
+     Check(AppConfig.ResolveFolder(exe,profile)==Path.GetFullPath(exe),"portable marker");
+     Check(AppConfig.ResolveFolder(exe+Path.DirectorySeparatorChar,profile)==Path.GetFullPath(exe),"trailing separator");
+     File.Delete(Path.Combine(exe,"portable.flag"));
+     Directory.CreateDirectory(Path.Combine(exe,"data"));File.WriteAllText(Path.Combine(exe,"data","desktop-settings.json"),"{}");
+     Check(AppConfig.ResolveFolder(exe,profile)==Path.GetFullPath(exe),"old local settings preserved");
+    }finally{
+     string flag=Path.Combine(exe,"portable.flag"),config=Path.Combine(exe,"data","desktop-settings.json");
+     if(File.Exists(flag))File.Delete(flag);if(File.Exists(config))File.Delete(config);
+     if(Directory.Exists(Path.Combine(exe,"data")))Directory.Delete(Path.Combine(exe,"data"));
+     Directory.Delete(exe);Directory.Delete(temp);
+    }
+   });
    File.WriteAllText(report,J.Json(new{passed=true,count=results.Count,tests=results,shell=Shell()}),new System.Text.UTF8Encoding(false));
   }
   static async Task Integration(){

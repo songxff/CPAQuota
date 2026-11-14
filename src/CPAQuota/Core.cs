@@ -50,6 +50,12 @@ namespace CpaTaskbar {
   }
   static bool IsRgb(string value){return value!=null&&value.Length==7&&value[0]=='#'&&value.Substring(1).All(ch=>"0123456789ABCDEFabcdef".IndexOf(ch)>=0);}
   public static string Folder=AppDomain.CurrentDomain.BaseDirectory;
+  public static string ResolveFolder(string executableFolder,string localDataFolder){
+   string folder=Path.GetFullPath(executableFolder);
+   if(folder.Length>Path.GetPathRoot(folder).Length)folder=folder.TrimEnd(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar);
+   return File.Exists(Path.Combine(folder,"portable.flag"))||File.Exists(Path.Combine(folder,"data","desktop-settings.json"))?folder:Path.Combine(localDataFolder,"CPAQuota");
+  }
+  public static void InitializeStorage(){Folder=ResolveFolder(AppDomain.CurrentDomain.BaseDirectory,Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));}
   public static string FileName{get{return Path.Combine(Folder,"data","desktop-settings.json");}}
   public static string Protect(string value){return String.IsNullOrEmpty(value)?"":Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value),null,DataProtectionScope.CurrentUser));}
   public static string Unprotect(string value){return String.IsNullOrEmpty(value)?"":Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(value),null,DataProtectionScope.CurrentUser));}
