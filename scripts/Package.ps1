@@ -7,10 +7,11 @@ $release=Join-Path $root 'artifacts\releases'
 $stage=Join-Path $root ('artifacts\package\'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $release,$stage -Force|Out-Null
 Copy-Item -LiteralPath $exe -Destination $stage
+Copy-Item -LiteralPath ($exe+'.config') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'installer\portable-readme.txt') -Destination (Join-Path $stage 'README.txt')
 [IO.File]::WriteAllText((Join-Path $stage 'portable.flag'),"portable",[Text.Encoding]::ASCII)
 $zip=Join-Path $release ('CPAQuota-'+$version+'-Portable-x86.zip')
-Compress-Archive -LiteralPath @((Join-Path $stage 'CPAQuota.exe'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'portable.flag')) -DestinationPath $zip -CompressionLevel Optimal -Force
+Compress-Archive -LiteralPath @((Join-Path $stage 'CPAQuota.exe'),(Join-Path $stage 'CPAQuota.exe.config'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'portable.flag')) -DestinationPath $zip -CompressionLevel Optimal -Force
 $msi=Join-Path $release ('CPAQuota-'+$version+'-Setup-x86.msi')
 $wixArgs=@('build',(Join-Path $root 'installer\CPAQuota.wxs'),'-arch','x86','-ext','WixToolset.UI.wixext','-culture','zh-CN','-d',('AppExe='+$exe),'-d',('AppIcon='+(Join-Path $root 'src\CPAQuota\Assets\app.ico')),'-d',('Readme='+(Join-Path $root 'installer\installed-readme.txt')),'-d',('Version='+$version),'-pdbtype','none','-o',$msi)
 & wix extension add WixToolset.UI.wixext/5.0.2

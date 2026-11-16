@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -10,10 +10,10 @@ using System.Windows.Forms;
 namespace CpaTaskbar {
  public sealed class CommandHost:NativeWindow,IDisposable{
   public static string InstanceCaption{get{return "CPAQuotaTaskbar."+J.Hash(Application.ExecutablePath.ToLowerInvariant());}}
-  public static readonly int OpenMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Open.Settings.v1"),ExitMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Exit.v1");
-  readonly Action open,exit;
-  public CommandHost(Action show,Action close){open=show;exit=close;CreateHandle(new CreateParams{Caption=InstanceCaption,Style=unchecked((int)0x80000000),ExStyle=0x80});}
-  protected override void WndProc(ref Message m){if(m.Msg==OpenMessage){open();return;}if(m.Msg==ExitMessage){exit();return;}base.WndProc(ref m);}
+  public static readonly int OpenMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Open.Settings.v1"),ExitMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Exit.v1"),DetailsMessage=Native.RegisterWindowMessage("CPAQuotaTaskbar.Open.Details.v1");
+  readonly Action open,exit,details;
+  public CommandHost(Action show,Action close,Action showDetails){open=show;exit=close;details=showDetails;CreateHandle(new CreateParams{Caption=InstanceCaption,Style=unchecked((int)0x80000000),ExStyle=0x80});}
+  protected override void WndProc(ref Message m){if(m.Msg==OpenMessage){open();return;}if(m.Msg==DetailsMessage){details();return;}if(m.Msg==ExitMessage){exit();return;}base.WndProc(ref m);}
   public void Dispose(){DestroyHandle();}
  }
  public sealed class TaskbarApp:ApplicationContext{
@@ -29,22 +29,22 @@ namespace CpaTaskbar {
   readonly CommandHost commands;
   bool closing,refreshingUi;
   int queuedUi,seconds;
-  long lastRotate,lastStatus;
-  public TaskbarApp(AppConfig c){
+  long lastRotate,lastStatus,lastDetailsClick;
+  public TaskbarApp(AppConfig c,bool openDetails=false){
    Config=c;var handle=ui.Handle;service=new QuotaService(c);
    strip=NewStrip();
-   tray=new NotifyIcon{Text="CPA 额度状态栏",Icon=AppIcon(),Visible=false,ContextMenuStrip=menu};tray.DoubleClick+=(s,e)=>ToggleDetails();tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)ToggleDetails();};
-   menu.Opening+=(s,e)=>BuildMenu();commands=new CommandHost(ShowSettings,()=>ExitThread());
+   tray=new NotifyIcon{Text="CPA 额度状态栏",Icon=AppIcon(),Visible=true,ContextMenuStrip=menu};tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)ToggleDetails();};
+   menu.Opening+=(s,e)=>BuildMenu();commands=new CommandHost(ShowSettings,()=>ExitThread(),ShowDetails);
    service.Changed+=OnChanged;
    tick.Tick+=(s,e)=>{
     if(closing)return;
     if(strip.IsDisposed)strip=NewStrip();
-    try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);tray.Visible=!strip.Docking.Mode.StartsWith("Windows 10");}catch{ /* Explorer重建时下一轮重试 */ }
+    try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);}catch{ /* Explorer重建时下一轮重试，托盘入口保持可用 */ }
     strip.RefreshClock();
-    if(details!=null&&details.Visible)details.Canvas.Invalidate();
+    if(details!=null&&details.Visible)details.Canvas.RefreshClock();
     if(settings!=null&&!settings.IsDisposed)settings.RefreshClock();
     if(++seconds%5==0)Refresh(false);
-    if(Config.Rotate&&J.Now-lastRotate>Config.RotateSeconds*1000){
+    if(Config.Rotate&&!QuotaAggregation.Enabled(Config)&&J.Now-lastRotate>Config.RotateSeconds*1000){
      var a=service.State.Accounts.Where(x=>x.Supported&&Config.SelectedIds.Contains(x.Id)).ToList();
      if(a.Count>1){int index=a.FindIndex(x=>x.Id==Config.FocusId);SelectAccount(a[(index+1+a.Count)%a.Count].Id,false);}lastRotate=J.Now;
     }
@@ -52,6 +52,7 @@ namespace CpaTaskbar {
    };
    tick.Start();RefreshUI();Refresh(true);
    if(String.IsNullOrEmpty(c.CpaSecret))ui.BeginInvoke((Action)ShowSettings);
+   else if(openDetails)ui.BeginInvoke((Action)ShowDetails);
   }
   QuotaStrip NewStrip(){var f=new QuotaStrip(Config);f.Clicked+=ToggleDetails;f.ContextMenuStrip=menu;return f;}
   int DesiredWidth(){return TaskbarMetrics.TotalWidth(Config);}
@@ -61,7 +62,7 @@ namespace CpaTaskbar {
    foreach(var a in service.State.Accounts.Where(a=>a.Supported&&(Config.SelectedIds.Count==0||Config.SelectedIds.Contains(a.Id)))){
     string id=a.Id;var item=new ToolStripMenuItem(a.ToString()){Checked=a.Id==Config.FocusId};item.Click+=(s,e)=>SelectAccount(id,true);submenu.DropDownItems.Add(item);
    }
-   menu.Items.Add(submenu);menu.Items.Add("查看详情",null,(s,e)=>ToggleDetails());menu.Items.Add("刷新额度",null,(s,e)=>Refresh(true));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("设置…",null,(s,e)=>ShowSettings());menu.Items.Add("退出",null,(s,e)=>ExitThread());
+   menu.Items.Add(submenu);menu.Items.Add("查看详情",null,(s,e)=>ShowDetails());menu.Items.Add("刷新额度",null,(s,e)=>Refresh(true));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("设置…",null,(s,e)=>ShowSettings());menu.Items.Add("退出",null,(s,e)=>ExitThread());
   }
   void Refresh(bool force){if(closing)return;Task.Run(()=>service.RefreshAsync(force));}
   void OnChanged(){
@@ -76,11 +77,11 @@ namespace CpaTaskbar {
     try{Config.Save();}catch{}
    }
    strip.Config=Config;strip.RefreshState(state);
-   try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);tray.Visible=!strip.Docking.Mode.StartsWith("Windows 10");}catch{}
+   try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);}catch{}
    if(details!=null){refreshingUi=true;try{details.UpdateData(state,Config);}finally{refreshingUi=false;}}
    if(settings!=null&&!settings.IsDisposed)settings.UpdateAccounts(state);
    var account=Look.Focus(state,Config);
-   string tip=account==null?"CPA 额度状态栏":"CPA 额度 · "+J.Provider(account.Provider);
+   string tip=QuotaAggregation.Enabled(Config)?QuotaAggregation.Build(state,Config).Title(Config):account==null?"CPA 额度状态栏":"CPA 额度 · "+J.Provider(account.Provider);
    if(tip.Length<=63)tray.Text=tip;
    WriteStatus();
   }
@@ -91,10 +92,12 @@ namespace CpaTaskbar {
   void EnsureDetails(){
    if(details!=null)return;
    details=new DetailsForm();details.SettingsRequested+=ShowSettings;details.RefreshRequested+=()=>Refresh(true);
+   details.Deactivate+=(s,e)=>lastDetailsClick=J.Now;
    details.Accounts.SelectedIndexChanged+=(s,e)=>{if(!refreshingUi){var a=details.Accounts.SelectedItem as Account;if(a!=null)SelectAccount(a.Id,true);}};
    details.Icon=tray.Icon;
   }
-  void ToggleDetails(){EnsureDetails();if(details.Visible){details.Hide();return;}refreshingUi=true;try{details.UpdateData(service.State,Config);}finally{refreshingUi=false;}details.ShowNear(strip.Docking.ScreenBounds);}
+  void ToggleDetails(){if(J.Now-lastDetailsClick<SystemInformation.DoubleClickTime)return;lastDetailsClick=J.Now;EnsureDetails();if(details.Visible){details.Hide();return;}ShowDetails();}
+  public void ShowDetails(){if(closing)return;EnsureDetails();refreshingUi=true;try{details.UpdateData(service.State,Config);}finally{refreshingUi=false;}details.ShowNear(strip.Docking.ScreenBounds);}
   public void ShowSettings(){
    if(closing)return;if(details!=null)details.Hide();
    if(settings!=null&&!settings.IsDisposed){settings.Show();settings.Activate();return;}
@@ -104,7 +107,7 @@ namespace CpaTaskbar {
   }
   void WriteStatus(){
    try{lastStatus=J.Now;Directory.CreateDirectory(Path.Combine(AppConfig.Folder,"data"));var s=service.State;var a=Look.Focus(s,Config);
-    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version="0.6.0",pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode},accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
+    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version="0.6.0",pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode,transparentBackground=Config.TransparentBackground},presentation=new{lastPresentedAt=strip.LastPresentedAt,count=strip.PresentationCount},detailsVisible=details!=null&&details.Visible,accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
    catch{}
   }
   protected override void ExitThreadCore(){
@@ -142,9 +145,9 @@ namespace CpaTaskbar {
     }
     if(args.Contains("--exit")){Native.PostMessage(new IntPtr(0xffff),CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
     bool created;using(var mutex=new Mutex(true,@"Local\CPAQuotaTaskbar."+System.Security.Principal.WindowsIdentity.GetCurrent().User.Value,out created)){
-     if(!created){Native.PostMessage(new IntPtr(0xffff),CommandHost.OpenMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
+     if(!created){var host=Native.FindWindow(null,CommandHost.InstanceCaption);Native.PostMessage(host==IntPtr.Zero?new IntPtr(0xffff):host,args.Contains("--details")?CommandHost.DetailsMessage:CommandHost.OpenMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
      Application.ThreadException+=(s,e)=>Log("界面发生异常，可退出后重新启动。");
-     AppConfig.InitializeStorage();var c=AppConfig.Load();Application.Run(new TaskbarApp(c));GC.KeepAlive(mutex);
+     AppConfig.InitializeStorage();var c=AppConfig.Load();Application.Run(new TaskbarApp(c,args.Contains("--details")));GC.KeepAlive(mutex);
     }
     return 0;
    }catch(Exception e){

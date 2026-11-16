@@ -19,9 +19,107 @@ namespace CpaTaskbar {
   public static void Run(string report){
    var results=new List<object>();
    Action<string,Action> test=(name,run)=>{run();results.Add(new{name=name,passed=true});};
+   test("透明背景保留不可见点击底层，文字边缘平滑且可切换实色",()=>{
+    var c=new AppConfig{Theme="light",FocusId="example",TransparentBackground=true,ResetTimeMode="countdown"};
+    using(var b=new Bitmap(307,64,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(b)){
+     Look.Strip(g,new Rectangle(0,0,307,64),Example(),c);
+     Check(b.GetPixel(0,0).A==1&&b.GetPixel(150,1).A==1,"invisible surface must remain hittable");
+     int opaque=0,edge=0;for(int y=0;y<b.Height;y++)for(int x=0;x<b.Width;x++){int alpha=b.GetPixel(x,y).A;if(alpha==255)opaque++;else if(alpha>1)edge++;}
+     Check(opaque>20&&edge>20,"visible antialiased text");
+     c.TransparentBackground=false;Look.Strip(g,new Rectangle(0,0,307,64),Example(),c);Check(b.GetPixel(150,1).A==255,"opaque fallback");
+    }
+   });
+   test("额度内容上移后周进度条底部保留六像素留白",()=>{
+    var config=new AppConfig{Theme="light",FocusId="example",TransparentBackground=true,ColorMode="both"};
+    using(var image=new Bitmap(307,96,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(image)){
+     Look.Strip(g,new Rectangle(0,0,307,96),Example(),config);
+     for(int y=90;y<96;y++)for(int x=0;x<307;x++)Check(image.GetPixel(x,y).A==1,"weekly progress touches bottom at "+x+","+y);
+     Check(image.GetPixel(30,86).A==255,"weekly progress was clipped instead of lifted");
+    }
+   });
+   AggregationTests.Run(test);
+   test("Windows 11及未知系统不嵌入旧任务栏，Windows 10保留嵌入",()=>{
+    var bar=new Rectangle(0,1040,1920,40);
+    foreach(int build in new[]{22000,22631,26100,26300,Int32.MaxValue,0})Check(!TaskbarCompatibility.CanEmbed(build,true,true,bar),"unsafe embedding "+build);
+    Check(TaskbarCompatibility.CanEmbed(19045,true,true,bar),"Windows 10 embedding");
+    Check(!TaskbarCompatibility.CanEmbed(19045,false,true,bar)&&!TaskbarCompatibility.CanEmbed(19045,true,false,bar),"hidden legacy windows");
+    Check(!TaskbarCompatibility.CanEmbed(19045,true,true,new Rectangle(0,0,48,1080)),"vertical taskbar");
+   });
+   test("兼容模式不把桌面或另一显示器窗口当作全屏应用",()=>{
+    var monitor=new Rectangle(0,0,1920,1080);
+    foreach(string cls in new[]{"Progman","WorkerW","Shell_TrayWnd","Shell_SecondaryTrayWnd"})Check(!TaskbarCompatibility.IsFullscreenApp(monitor,monitor,cls),"desktop "+cls);
+    Check(TaskbarCompatibility.IsFullscreenApp(monitor,monitor,"GameWindow"),"fullscreen app");
+    Check(!TaskbarCompatibility.IsFullscreenApp(new Rectangle(1920,0,1920,1080),monitor,"GameWindow"),"other display");
+    Check(!TaskbarCompatibility.IsFullscreenApp(new Rectangle(0,0,1920,1040),monitor,"Window"),"maximized app");
+   });
+   test("设置窗口在窄窗口与高DPI下完整排版，反复布局不累积缩放",()=>{
+    var c=new AppConfig{ColorMode="both"};
+    using(var service=new QuotaService(c))using(var form=new SettingsForm(c,service,Example())){
+     form.Opacity=0;form.Show();form.MinimumSize=Size.Empty;Application.DoEvents();
+     var tabs=form.Controls.OfType<TabControl>().Single();
+     int margin=form.Controls.Find("taskbarWidth",true).Single().Margin.Top;
+     foreach(int windowWidth in new[]{760,1000,1520,760}){
+      form.ClientSize=new Size(windowWidth,850);
+      for(int page=0;page<tabs.TabCount;page++){
+       tabs.SelectedIndex=page;Application.DoEvents();form.PerformLayout();Application.DoEvents();
+       CheckSettingsLayout(form);
+       Check(form.Controls.Find("taskbarWidth",true).Single().Margin.Top==margin,"repeated DPI scaling");
+      }
+     }
+    }
+   });
    test("Codex按实际周期识别5小时与周，保留0使用率",()=>{
     var w=QuotaParser.Codex(Parse("{\"rate_limit\":{\"primary_window\":{\"used_percent\":0,\"limit_window_seconds\":604800},\"secondary_window\":{\"used_percent\":28,\"limit_window_seconds\":18000,\"reset_after_seconds\":3600}}}"));
     Check(w[0].Id=="week"&&w[0].Remaining==100,"weekly swapped");Check(w[1].Id=="5h"&&w[1].Remaining==72,"5h");Check(w[1].ResetAt>J.Now,"reset");
+   });
+   test("详情为紧凑无标题悬浮框，失焦收起后可重复打开",()=>{
+    using(var form=new DetailsForm()){
+     var work=Screen.PrimaryScreen.WorkingArea;var anchor=new Rectangle(work.Right-100,work.Bottom,80,30);
+     form.Opacity=0;form.UpdateData(Example(),new AppConfig{FocusId="example"});form.ShowNear(anchor);Application.DoEvents();
+     Check(form.FormBorderStyle==FormBorderStyle.None&&!form.ControlBox,"popup has window chrome");
+     Check(form.Width==Math.Min(TaskbarMetrics.Scale(320,DetailsLayout.Dpi(form)),work.Width),"popup width is not compact");
+     Check(form.Height<TaskbarMetrics.Scale(300,DetailsLayout.Dpi(form)),"two quotas leave excessive empty space");
+     Check(work.Contains(form.Bounds),"popup outside working area");
+     typeof(Form).GetMethod("OnDeactivate",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(form,new object[]{EventArgs.Empty});Application.DoEvents();
+     Check(!form.Visible&&!form.IsDisposed,"deactivation should hide reusable popup");
+     for(int i=0;i<2;i++){form.ShowNear(anchor);Application.DoEvents();Check(form.Visible,"details cannot reopen");form.Close();Application.DoEvents();Check(!form.IsDisposed&&!form.Visible,"close should hide reusable details");}
+    }
+   });
+   test("详情页长文字自动换行，窄窗口和高DPI下按钮完整",()=>{
+    var state=Example();state.Quotas["example"].Windows[0].Label="模型额度与较长的中文窗口名称";
+    state.Quotas["example"].Windows[0].Scope="long-model-name-example-with-extra-context";
+    state.History["example"].Error="服务请求失败（HTTP 404）。这是用于验证错误信息换行的测试说明，历史统计暂时不可用。";
+    var config=new AppConfig{FocusId="example",CpampEnabled=true};
+    using(var form=new DetailsForm()){
+     form.Opacity=0;form.UpdateData(state,config);form.Show();form.MinimumSize=Size.Empty;Application.DoEvents();
+     foreach(int width in new[]{480,880,640}){
+      form.UpdateData(state,config);form.ClientSize=new Size(width,650);Application.DoEvents();
+      var footer=form.Controls.Find("detailsFooter",true).Single();
+      foreach(var button in Descendants(footer).OfType<Button>()){
+       var text=TextRenderer.MeasureText(button.Text,button.Font);Check(button.Width>=text.Width+button.Padding.Horizontal&&button.Height>=text.Height+button.Padding.Vertical,"details button cropped");
+       Check(form.ClientRectangle.Contains(form.RectangleToClient(button.RectangleToScreen(button.ClientRectangle))),"details footer outside window");
+      }
+      foreach(var table in new[]{(TableLayoutPanel)form.Canvas}.Concat(Descendants(form.Canvas).OfType<TableLayoutPanel>())){
+       foreach(Control child in table.Controls){
+        Check(child.Left>=0&&child.Right<=table.ClientSize.Width,"details horizontal clipping: "+child.Text);
+        if(child is Label)Check(child.Height>=child.GetPreferredSize(new Size(child.Width,0)).Height,"details text cropped: "+child.Text+" "+child.Bounds+" preferred="+child.GetPreferredSize(new Size(child.Width,0)));
+       }
+      }
+     }
+    }
+   });
+   test("详情页多额度限高滚动，切换账号后按内容收缩",()=>{
+    var state=Example();state.Quotas["example"].Windows=Enumerable.Range(1,30).Select(i=>new QuotaWindow{Label="测试额度 "+i,Used=20,ResetAt=J.Now+3600000}).ToList();
+    var config=new AppConfig{FocusId="example",CpampEnabled=true};
+    using(var form=new DetailsForm()){
+     var work=Screen.PrimaryScreen.WorkingArea;var anchor=new Rectangle(work.Right-100,work.Bottom,80,30);
+     form.Opacity=0;form.UpdateData(state,config);form.ShowNear(anchor);Application.DoEvents();
+     var scroll=(Panel)form.Controls.Find("detailsScroll",true).Single();Check(scroll.VerticalScroll.Visible,"long details should scroll");
+     Check(form.Canvas.Controls.Find("quotaValue",true).Length==20,"quota window limit");
+     var size=form.ClientSize;form.UpdateData(state,config);Application.DoEvents();Check(form.ClientSize==size,"same data changed popup size");
+     Check(form.Controls.Find("historyStatus",true).Single().Bottom<=form.Canvas.Height,"history content outside canvas");
+     form.UpdateData(Example(),new AppConfig{FocusId="example"});Application.DoEvents();Check(form.Height<size.Height,"short content did not shrink popup");
+    }
    });
    test("Claude未知额度保留null，模型周窗口独立",()=>{
     var w=QuotaParser.Claude(Parse("{\"five_hour\":{\"utilization\":null},\"seven_day_opus\":{\"utilization\":40}}"));
@@ -85,24 +183,42 @@ namespace CpaTaskbar {
     c.YellowUsedPercent=30;c.RedUsedPercent=80;
     Check(QuotaColors.UsageColor(29.99,c)==green&&QuotaColors.UsageColor(30,c)==yellow&&QuotaColors.UsageColor(80,c)==red,"custom boundaries");
    });
-   test("两行背景分别按已用72和35填充，数字仍显示余量28和65",()=>{
+   test("两行进度条分别按剩余28和65填充，正文底色统一",()=>{
     var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",ColorMode="background",Theme="dark",FocusId="example"};var s=ColorExample();Color bg=Look.StripSurface(true,false);
     using(var b=StripBitmap(s,c,200,48)){
      var windows=s.Quotas["example"].Windows;
      Color top=QuotaColors.ProgressSurface(bg,windows[0],true,c,true),bottom=QuotaColors.ProgressSurface(bg,windows[1],true,c,true);
-     Check(b.GetPixel(143,0).ToArgb()==top.ToArgb()&&b.GetPixel(144,0).ToArgb()==bg.ToArgb(),"top 72% fill");
-     Check(b.GetPixel(69,24).ToArgb()==bottom.ToArgb()&&b.GetPixel(70,24).ToArgb()==bg.ToArgb(),"bottom 35% fill");
+     var first=QuotaColors.ProgressBounds(new Rectangle(0,-2,200,24));var second=QuotaColors.ProgressBounds(new Rectangle(0,22,200,24));
+     int firstEnd=first.Left+QuotaColors.FillWidth(first.Width,28),secondEnd=second.Left+QuotaColors.FillWidth(second.Width,65);
+     Check(b.GetPixel(firstEnd-2,first.Top+1).ToArgb()==top.ToArgb()&&b.GetPixel(firstEnd+1,first.Top+1).ToArgb()!=top.ToArgb(),"top 28% rail");
+     Check(b.GetPixel(secondEnd-2,second.Top+1).ToArgb()==bottom.ToArgb()&&b.GetPixel(secondEnd+1,second.Top+1).ToArgb()!=bottom.ToArgb(),"bottom 65% rail");
+     Check(b.GetPixel(100,1).ToArgb()==bg.ToArgb()&&b.GetPixel(100,25).ToArgb()==bg.ToArgb(),"text background has no color blocks");
      Check(Look.Value(windows[0],true,c)=="28%"&&Look.Value(windows[1],true,c)=="65%","remaining numbers");
      c.ShowUsed=true;Check(Look.Value(windows[0],true,c)=="72%","used toggle");
+    }
+   });
+   test("剩余69和84与已用31和16的进度长度跟随显示切换",()=>{
+    var c=new AppConfig{ColorMode="both",Theme="light"};var surface=Look.StripSurface(false,false);
+    var area=new Rectangle(0,0,324,48);var track=QuotaColors.ProgressBounds(area);
+    Check(track.Width==300&&track.Height==6,"thicker track at taskbar size");
+    foreach(bool showUsed in new[]{false,true})foreach(int used in new[]{31,16,0,100}){
+     c.ShowUsed=showUsed;var w=new QuotaWindow{Used=used};int percent=showUsed?used:100-used;
+     using(var image=new Bitmap(324,48))using(var g=Graphics.FromImage(image)){
+      g.Clear(surface);QuotaColors.PaintProgress(g,area,w,true,c,surface,false);
+      var fill=QuotaColors.ProgressSurface(surface,w,true,c,false);int end=track.Left+percent*3,y=track.Top+track.Height/2;
+      Check(Look.Value(w,true,c)==percent+"%","percentage text "+showUsed+" "+used);
+      if(percent>0)Check(image.GetPixel(end-3,y)==fill,"filled extent "+showUsed+" "+used);
+      if(percent<100)Check(image.GetPixel(end+3,y)!=fill,"empty extent "+showUsed+" "+used);
+     }
     }
    });
    test("默认及仅数字模式无背景，自定义背景不污染历史列",()=>{
     var s=ColorExample();var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example"};Color bg=Look.StripSurface(true,false);
     foreach(string mode in new[]{"default","numbers"}){
-     c.ColorMode=mode;using(var b=StripBitmap(s,c,200,48))Check(b.GetPixel(0,0).ToArgb()==bg.ToArgb()&&b.GetPixel(0,24).ToArgb()==bg.ToArgb(),"no fill "+mode);
+     c.ColorMode=mode;using(var b=StripBitmap(s,c,200,48))Check(b.GetPixel(100,1).ToArgb()==bg.ToArgb()&&b.GetPixel(100,25).ToArgb()==bg.ToArgb(),"no fill "+mode);
     }
     c.ColorMode="both";c.CpampEnabled=true;c.HistoryInBar=true;
-    using(var b=StripBitmap(s,c,276,48))Check(b.GetPixel(275,0).ToArgb()==bg.ToArgb(),"history untouched");
+    using(var b=StripBitmap(s,c,276,48))Check(b.GetPixel(260,1).ToArgb()==bg.ToArgb(),"history untouched");
    });
    test("未知、过期、读取失败数据不填充",()=>{
     var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",ColorMode="background"};Color bg=Look.StripSurface(true,false);
@@ -124,7 +240,7 @@ namespace CpaTaskbar {
     foreach(bool dark in new[]{true,false})foreach(string hex in new[]{"#50D39A","#F1C553","#F17788","#000000","#FFFFFF","#808080"}){
      var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",ColorMode="both",LowUsageColor=hex,MediumUsageColor=hex,HighUsageColor=hex};var w=new QuotaWindow{Used=72};
      Color bg=Look.StripSurface(dark,false),fill=QuotaColors.ProgressSurface(bg,w,true,c,dark),number=QuotaColors.NumberColor(w,true,c,dark,bg,Look.Muted);
-     Check(QuotaColors.Contrast(number,bg)>=4.5&&QuotaColors.Contrast(number,fill)>=4.5,"contrast "+dark+" "+hex);
+     Check(QuotaColors.Contrast(number,bg)>=4.5,"contrast "+dark+" "+hex);
     }
    });
    test("旧简称完全不参与绘制，无左侧徽标占位",()=>{
@@ -258,10 +374,11 @@ namespace CpaTaskbar {
    test("倒计时内容未变化时不触发重绘，变化后刷新",()=>{
     var c=new AppConfig{Theme="dark",ResetTimeMode="countdown",FocusId="example"};var state=ColorExample();
     state.Quotas["example"].Windows[0].ResetAt=J.Now+8130000;state.Quotas["example"].Windows[1].ResetAt=J.Now+282600000;
-    using(var strip=new QuotaStrip(c)){
-     var handle=strip.Handle;strip.RefreshState(state);int invalidations=0;strip.Invalidated+=(s,e)=>invalidations++;
-     for(int i=0;i<10;i++)strip.RefreshClock();Check(invalidations==0,"stable clock should stay idle");
-     state.Quotas["example"].Windows[0].ResetAt=J.Now+59000;strip.RefreshClock();Check(invalidations>0,"changed clock refreshes");
+    foreach(bool transparent in new[]{false,true})using(var strip=new QuotaStrip(c)){
+     c.TransparentBackground=transparent;state.Quotas["example"].Windows[0].ResetAt=J.Now+8130000;
+     var handle=strip.Handle;strip.RefreshState(state);int invalidations=0,presented=strip.PresentationCount;strip.Invalidated+=(s,e)=>invalidations++;
+     for(int i=0;i<10;i++)strip.RefreshClock();Check(invalidations==0&&strip.PresentationCount==presented,"stable clock should stay idle");
+     state.Quotas["example"].Windows[0].ResetAt=J.Now+59000;strip.RefreshClock();Check(transparent?strip.PresentationCount>presented:invalidations>0,"changed clock refreshes "+transparent);
     }
    });
    test("安装版与便携版配置目录分离，兼容旧版同目录配置",()=>{
@@ -317,11 +434,69 @@ namespace CpaTaskbar {
   static Snapshot ColorExample(){
    var state=Example();state.Quotas["example"].Windows[0].Used=72;state.Quotas["example"].Windows[1].Used=35;return state;
   }
+  static IEnumerable<Control> Descendants(Control parent){foreach(Control c in parent.Controls){yield return c;foreach(var child in Descendants(c))yield return child;}}
+  static void CheckSettingsLayout(SettingsForm form){
+   var title=form.Controls.Find("settingsTitle",true).Single();
+   Check(title.Height>=title.GetPreferredSize(new Size(title.Width,0)).Height,"title clipped");
+   var header=form.Controls.Find("settingsHeader",true).Single();var tabs=form.Controls.OfType<TabControl>().Single();
+   Check(header.Bottom<=tabs.Top,"header overlaps tabs");
+   foreach(var button in new[]{"saveSettings","cancelSettings"}.Select(n=>form.Controls.Find(n,true).Single())){
+    var text=TextRenderer.MeasureText(button.Text,button.Font);
+    Check(button.Width>=text.Width+button.Padding.Horizontal&&button.Height>=text.Height+button.Padding.Vertical,"footer button clipped");
+    Check(form.ClientRectangle.Contains(form.RectangleToClient(button.RectangleToScreen(button.ClientRectangle))),"footer outside window");
+   }
+   foreach(var grid in Descendants(tabs.SelectedTab).OfType<TableLayoutPanel>()){
+    foreach(Control control in grid.Controls){
+     Check(control.Left>=0&&control.Right<=grid.ClientSize.Width,"horizontal clipping: "+control.Name+" "+control.Text);
+     if(control is Label||control is CheckBox)Check(control.Height>=control.GetPreferredSize(new Size(control.Width,0)).Height,"text height: "+control.Text);
+    }
+   }
+   var picker=(ColorModePicker)form.Controls.Find("quotaColorMode",true).Single();
+   if(tabs.SelectedIndex==3){
+    var radios=picker.Controls.Cast<Control>().ToArray();
+    for(int i=0;i<radios.Length;i++){
+     Check(picker.ClientRectangle.Contains(radios[i].Bounds),"radio outside picker");
+     for(int j=i+1;j<radios.Length;j++)Check(!radios[i].Bounds.IntersectsWith(radios[j].Bounds),"radios overlap");
+    }
+   }
+  }
+  public static void SmokeTaskbar(string report){
+   var config=new AppConfig{Width=304,PhysicalPixels=true,FocusId="example",Theme="light",TransparentBackground=true};Exception failure=null;int ticks=0,firstPresentation=0;
+   using(var strip=new QuotaStrip(config))using(var popup=new DetailsForm())using(var timer=new System.Windows.Forms.Timer{Interval=500}){
+    var state=Example();strip.RefreshState(new Snapshot());
+    timer.Tick+=(s,e)=>{
+     try{
+      strip.Docking.Update(config.Width,8,true);
+      ticks++;
+      if(ticks==1){firstPresentation=strip.PresentationCount;return;}
+      if(ticks==2){
+       strip.RefreshState(state);
+       Check(strip.PresentationCount>firstPresentation,"transparent panel still displays its initial connecting bitmap");
+       Check(strip.LastPresentedAt>0&&strip.State.Accounts.Count>0,"new quota state was not presented");
+       var bounds=strip.Docking.ScreenBounds;
+       foreach(int x in new[]{1,bounds.Width/2,bounds.Width-2})foreach(int y in new[]{1,bounds.Height/2,bounds.Height-2})
+        Check(Native.WindowFromPoint(new Point(bounds.Left+x,bounds.Top+y))==strip.Handle,"transparent blank area passes clicks through at "+x+","+y);
+       popup.UpdateData(state,config);popup.ShowNear(strip.Docking.ScreenBounds);return;
+      }
+      Check(popup.Visible,"taskbar timer dismissed details: foreground="+Native.Class(Native.GetForegroundWindow()));
+      if(ticks==4){int before=strip.PresentationCount;state.Quotas["example"].Windows[0].Used=66;strip.RefreshState(state);Check(strip.PresentationCount>before,"subsequent quota update did not replace layered bitmap");}
+      if(ticks<8)return;
+      var shell=Native.FindWindow("Shell_TrayWnd",null);Check(shell!=IntPtr.Zero,"desktop taskbar unavailable");
+      Check(TaskbarCompatibility.WindowsBuild!=Int32.MaxValue,"native Windows version unavailable");
+      if(TaskbarCompatibility.WindowsBuild>=22000){Check(Native.GetParent(strip.Handle)==IntPtr.Zero,"Windows 11 panel embedded");Check(!strip.Docking.Mode.StartsWith("Windows 10"),"incorrect Windows 10 mode");}
+      Check(Native.IsWindowVisible(strip.Handle),"panel hidden: "+strip.Docking.Mode);
+      Check(strip.Docking.ScreenBounds.IntersectsWith(Native.Bounds(shell)),"panel is outside taskbar");
+      File.WriteAllText(report,J.Json(new{passed=true,dock=strip.Docking.Diagnostics(),wholePanelHittable=true,connectingToQuotaUpdated=strip.PresentationCount>firstPresentation,presentationCount=strip.PresentationCount,popupSurvivedTaskbarUpdates=popup.Visible,popupObservedSeconds=3}));
+     }catch(Exception ex){failure=ex;}finally{if(ticks>=8||failure!=null){timer.Stop();Application.ExitThread();}}
+    };
+    timer.Start();Application.Run();if(failure!=null)throw failure;
+   }
+  }
   static Bitmap StripBitmap(Snapshot state,AppConfig config,int width,int height){
-   var bitmap=new Bitmap(width,height);using(var g=Graphics.FromImage(bitmap))Look.Strip(g,new Rectangle(0,0,width,height),state,config);return bitmap;
+   config=config.Clone();config.TransparentBackground=false;var bitmap=new Bitmap(width,height);using(var g=Graphics.FromImage(bitmap))Look.Strip(g,new Rectangle(0,0,width,height),state,config);return bitmap;
   }
   static void RenderColorModes(string folder){
-   var state=ColorExample();string[] modes={"default","background","numbers","both"},labels={"默认：保留当前样式","仅背景填充","仅百分比数字","背景填充 + 百分比数字"};
+   var state=ColorExample();string[] modes={"default","background","numbers","both"},labels={"默认：简洁数字","仅细进度条","仅百分比数字","细进度条 + 百分比数字"};
    using(var image=new Bitmap(700,380))using(var g=Graphics.FromImage(image))using(var heading=Look.Font(14,FontStyle.Bold))using(var text=Look.Font(10)){
     g.Clear(Color.FromArgb(246,248,252));
     Look.Text(g,"CPA 额度配色 · 示例数据",heading,Look.Ink,new Rectangle(20,10,660,35));
@@ -361,7 +536,7 @@ namespace CpaTaskbar {
    }
   }
   public static void Render(string folder){
-   Directory.CreateDirectory(folder);RenderColorModes(folder);RenderResetModes(folder);var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example",SelectedIds=new List<string>{"example"},CpampEnabled=true};var state=Example();
+   Directory.CreateDirectory(folder);AggregationTests.Render(folder);RenderColorModes(folder);RenderResetModes(folder);var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example",SelectedIds=new List<string>{"example"},CpampEnabled=true};var state=Example();
    using(var image=new Bitmap(152,48)){using(var g=Graphics.FromImage(image))Look.Strip(g,new Rectangle(0,0,152,48),state,c);image.Save(Path.Combine(folder,"taskbar-example.png"));}
    using(var service=new QuotaService(c))using(var settings=new SettingsForm(c,service,state)){
     settings.Text="CPA状态栏设置 · 示例预览";settings.Opacity=0;settings.Show();System.Windows.Forms.Application.DoEvents();
@@ -371,11 +546,28 @@ namespace CpaTaskbar {
     tabs.SelectedIndex=3;Application.DoEvents();
     using(var image=new Bitmap(settings.Width,settings.Height)){settings.DrawToBitmap(image,new Rectangle(Point.Empty,settings.Size));image.Save(Path.Combine(folder,"settings-colors-default.png"));}
     ((ColorModePicker)settings.Controls.Find("quotaColorMode",true).Single()).SelectedIndex=3;settings.UpdateAccounts(ColorExample());Application.DoEvents();
-    using(var image=new Bitmap(settings.Width,settings.Height)){settings.DrawToBitmap(image,new Rectangle(Point.Empty,settings.Size));image.Save(Path.Combine(folder,"settings-colors-custom.png"));}   }
-   using(var popup=new DetailsForm()){
-    popup.UpdateData(state,c);popup.Opacity=0;popup.Show();System.Windows.Forms.Application.DoEvents();popup.PerformLayout();
-    using(var image=new Bitmap(popup.Width,popup.Height)){popup.DrawToBitmap(image,new Rectangle(Point.Empty,popup.Size));image.Save(Path.Combine(folder,"details-example.png"));}
+    using(var image=new Bitmap(settings.Width,settings.Height)){settings.DrawToBitmap(image,new Rectangle(Point.Empty,settings.Size));image.Save(Path.Combine(folder,"settings-colors-custom.png"));}
+    File.WriteAllText(Path.Combine(folder,"settings-layout.json"),J.Json(LayoutSnapshot(settings)));
+    settings.MinimumSize=Size.Empty;settings.ClientSize=new Size(800,850);Application.DoEvents();
+    using(var image=new Bitmap(settings.Width,settings.Height)){settings.DrawToBitmap(image,new Rectangle(Point.Empty,settings.Size));image.Save(Path.Combine(folder,"settings-colors-narrow.png"));}
+    tabs.SelectedIndex=0;Application.DoEvents();
+    using(var image=new Bitmap(settings.Width,settings.Height)){settings.DrawToBitmap(image,new Rectangle(Point.Empty,settings.Size));image.Save(Path.Combine(folder,"settings-connection-narrow.png"));}
    }
+   using(var popup=new DetailsForm()){
+    c.CpampEnabled=false;popup.UpdateData(state,c);popup.Opacity=0;popup.ShowNear(new Rectangle(1000,1700,304,96));Application.DoEvents();
+    using(var image=new Bitmap(popup.Width,popup.Height)){popup.DrawToBitmap(image,new Rectangle(Point.Empty,popup.Size));image.Save(Path.Combine(folder,"details-compact.png"));}
+    c.CpampEnabled=true;
+    popup.UpdateData(state,c);popup.Opacity=0;popup.ShowNear(new Rectangle(1000,1700,304,96));System.Windows.Forms.Application.DoEvents();popup.PerformLayout();
+    using(var image=new Bitmap(popup.Width,popup.Height)){popup.DrawToBitmap(image,new Rectangle(Point.Empty,popup.Size));image.Save(Path.Combine(folder,"details-example.png"));}
+    state.History["example"].Error="服务请求失败（HTTP 404）。历史统计暂不可用，额度仍正常显示。";state.Quotas["example"].Windows[0].Scope="Long model name / 较长的模型与渠道名称";
+    popup.MinimumSize=Size.Empty;popup.ClientSize=new Size(480,650);popup.UpdateData(state,c);Application.DoEvents();
+    using(var image=new Bitmap(popup.Width,popup.Height)){popup.DrawToBitmap(image,new Rectangle(Point.Empty,popup.Size));image.Save(Path.Combine(folder,"details-narrow.png"));}
+    File.WriteAllText(Path.Combine(folder,"details-layout.json"),J.Json(LayoutSnapshot(popup)));
+   }
+  }
+  static object LayoutSnapshot(Control control){
+   var table=control as TableLayoutPanel;
+   return new{type=control.GetType().Name,name=control.Name,text=control.Text,bounds=control.Bounds,preferred=control.PreferredSize,margin=control.Margin,padding=control.Padding,maximum=control.MaximumSize,rows=table==null?null:table.GetRowHeights(),styles=table==null?null:table.RowStyles.Cast<RowStyle>().Select(r=>new{type=r.SizeType.ToString(),height=r.Height}).ToArray(),children=control.Controls.Cast<Control>().Select(LayoutSnapshot).ToArray()};
   }
  }
 }

@@ -7,7 +7,7 @@ namespace CpaTaskbar {
   public static string Text(QuotaWindow w,bool fresh,AppConfig c,long now){
    if(!Enabled(c))return "";
    if(!fresh||w==null||!w.ResetAt.HasValue)return "—";
-   return Format(w.ResetAt.Value,c.ResetTimeMode,now,TimeZoneInfo.Local);
+   return (w is SummaryWindow?"近":"")+Format(w.ResetAt.Value,c.ResetTimeMode,now,TimeZoneInfo.Local);
   }
   public static string Format(long at,string mode,long now,TimeZoneInfo zone){
    DateTimeOffset target,current;
