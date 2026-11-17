@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 
 namespace CpaTaskbar {
  public static class QuotaColors {
@@ -20,17 +21,29 @@ namespace CpaTaskbar {
    return result;
   }
   public static Color ProgressSurface(Color surface,QuotaWindow w,bool fresh,AppConfig c,bool dark){
-   return HasBackground(c)&&Valid(w,fresh)?Blend(surface,UsageColor(w.Used.Value,c),dark?.26:.22):surface;
+   return HasBackground(c)&&Valid(w,fresh)?Blend(surface,UsageColor(w.Used.Value,c),dark?.70:.75):surface;
+  }
+  public static GraphicsPath Rounded(Rectangle area,int radius){
+   var path=new GraphicsPath();int diameter=Math.Max(1,Math.Min(radius*2,Math.Min(area.Width,area.Height)));
+   path.AddArc(area.Left,area.Top,diameter,diameter,180,90);path.AddArc(area.Right-diameter,area.Top,diameter,diameter,270,90);
+   path.AddArc(area.Right-diameter,area.Bottom-diameter,diameter,diameter,0,90);path.AddArc(area.Left,area.Bottom-diameter,diameter,diameter,90,90);path.CloseFigure();return path;
+  }
+  public static Rectangle ProgressBounds(Rectangle area){
+   int inset=Math.Max(6,Math.Min(12,area.Height/3)),height=Math.Max(3,Math.Min(6,area.Height/8));
+   return new Rectangle(area.Left+inset,area.Bottom-height-2,Math.Max(0,area.Width-2*inset),height);
   }
   public static int FillWidth(int width,double used){if(width<=0||Double.IsNaN(used)||Double.IsInfinity(used))return 0;return (int)Math.Round(width*Math.Max(0,Math.Min(100,used))/100,MidpointRounding.AwayFromZero);}
   public static void PaintProgress(Graphics g,Rectangle area,QuotaWindow w,bool fresh,AppConfig c,Color surface,bool dark){
    if(!HasBackground(c)||!Valid(w,fresh))return;
-   int width=FillWidth(area.Width,w.Used.Value);if(width==0)return;
-   using(var brush=new SolidBrush(ProgressSurface(surface,w,fresh,c,dark)))g.FillRectangle(brush,area.X,area.Y,width,area.Height);
+   var track=ProgressBounds(area);if(track.Width<=0)return;
+   using(var path=Rounded(track,track.Height))using(var brush=new SolidBrush(Blend(surface,dark?Color.White:Color.Black,dark?.09:.06)))g.FillPath(brush,path);
+   int width=FillWidth(track.Width,Look.DisplayPercent(w,c));if(width==0)return;
+   var fill=new Rectangle(track.X,track.Y,width,track.Height);
+   using(var path=Rounded(fill,track.Height))using(var brush=new SolidBrush(ProgressSurface(surface,w,fresh,c,dark)))g.FillPath(brush,path);
   }
   public static Color NumberColor(QuotaWindow w,bool fresh,AppConfig c,bool dark,Color surface,Color defaultColor){
    if(!HasNumbers(c)||!Valid(w,fresh))return defaultColor;
-   return Readable(UsageColor(w.Used.Value,c),surface,ProgressSurface(surface,w,fresh,c,dark),dark);
+   return Blend(Readable(UsageColor(w.Used.Value,c),surface,surface,dark),dark?Color.White:Color.Black,dark?.04:.12);
   }
  }
 }

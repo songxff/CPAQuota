@@ -18,4 +18,6 @@ $testArguments=$common+@('/target:exe',('/out:'+(Join-Path $OutputDirectory 'CPA
 $testArguments+=@(Get-ChildItem -LiteralPath (Join-Path $root 'tests\CPAQuota.Tests') -Filter '*.cs'|ForEach-Object FullName)
 & $compiler $testArguments
 if($LASTEXITCODE -ne 0){throw 'Test runner compilation failed.'}
+Copy-Item -LiteralPath (Join-Path $app 'App.config') -Destination ($exe+'.config')
+Copy-Item -LiteralPath (Join-Path $app 'App.config') -Destination (Join-Path $OutputDirectory 'CPAQuota.Tests.exe.config')
 Write-Host ('Built: '+$exe)

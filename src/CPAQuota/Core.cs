@@ -36,11 +36,14 @@ namespace CpaTaskbar {
   public bool ShowUsed=false,SingleLine=false,HistoryInBar=false,Rotate=false,Autostart=false;
   public int Width=152,Offset=4,FontSize=9,RefreshSeconds=120,HistorySeconds=300,RotateSeconds=12;
   public bool PhysicalPixels=false;
+  public bool TransparentBackground=true;
   public string ColorMode="default";
   public string ResetTimeMode="off";
+  public string QuotaDisplayMode="single";
   public int YellowUsedPercent=50,RedUsedPercent=90;
   public string LowUsageColor="#50D39A",MediumUsageColor="#F1C553",HighUsageColor="#F17788";
   public void NormalizeAppearance(){
+   if(!new[]{"single","average","sum"}.Contains(QuotaDisplayMode))QuotaDisplayMode="single";
    if(!new[]{"off","time","countdown"}.Contains(ResetTimeMode))ResetTimeMode="off";
    if(!new[]{"default","background","numbers","both"}.Contains(ColorMode))ColorMode="default";
    if(YellowUsedPercent<1||YellowUsedPercent>=RedUsedPercent||RedUsedPercent>100){YellowUsedPercent=50;RedUsedPercent=90;}
