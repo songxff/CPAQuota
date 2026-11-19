@@ -30,7 +30,7 @@ namespace CpaTaskbar {
     }
    });
    test("额度内容上移后周进度条底部保留六像素留白",()=>{
-    var config=new AppConfig{Theme="light",FocusId="example",TransparentBackground=true,ColorMode="both"};
+    var config=new AppConfig{Theme="light",FocusId="example",TransparentBackground=true,ColorMode="both",ProgressStyle="thin"};
     using(var image=new Bitmap(307,96,System.Drawing.Imaging.PixelFormat.Format32bppPArgb))using(var g=Graphics.FromImage(image)){
      Look.Strip(g,new Rectangle(0,0,307,96),Example(),config);
      for(int y=90;y<96;y++)for(int x=0;x<307;x++)Check(image.GetPixel(x,y).A==1,"weekly progress touches bottom at "+x+","+y);
@@ -38,6 +38,7 @@ namespace CpaTaskbar {
     }
    });
    AggregationTests.Run(test);
+   ProgressStyleTests.Run(test);
    test("Windows 11及未知系统不嵌入旧任务栏，Windows 10保留嵌入",()=>{
     var bar=new Rectangle(0,1040,1920,40);
     foreach(int build in new[]{22000,22631,26100,26300,Int32.MaxValue,0})Check(!TaskbarCompatibility.CanEmbed(build,true,true,bar),"unsafe embedding "+build);
@@ -118,7 +119,10 @@ namespace CpaTaskbar {
      Check(form.Canvas.Controls.Find("quotaValue",true).Length==20,"quota window limit");
      var size=form.ClientSize;form.UpdateData(state,config);Application.DoEvents();Check(form.ClientSize==size,"same data changed popup size");
      Check(form.Controls.Find("historyStatus",true).Single().Bottom<=form.Canvas.Height,"history content outside canvas");
-     form.UpdateData(Example(),new AppConfig{FocusId="example"});Application.DoEvents();Check(form.Height<size.Height,"short content did not shrink popup");
+     // The popup hides when it loses activation; a test process without foreground rights can lose it
+     // at any time, so reopen it before checking the size instead of depending on focus.
+     form.UpdateData(Example(),new AppConfig{FocusId="example"});Application.DoEvents();if(!form.Visible){form.ShowNear(anchor);Application.DoEvents();}
+     Check(form.Height<size.Height,"short content did not shrink popup");
     }
    });
    test("Claude未知额度保留null，模型周窗口独立",()=>{
@@ -184,7 +188,7 @@ namespace CpaTaskbar {
     Check(QuotaColors.UsageColor(29.99,c)==green&&QuotaColors.UsageColor(30,c)==yellow&&QuotaColors.UsageColor(80,c)==red,"custom boundaries");
    });
    test("两行进度条分别按剩余28和65填充，正文底色统一",()=>{
-    var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",ColorMode="background",Theme="dark",FocusId="example"};var s=ColorExample();Color bg=Look.StripSurface(true,false);
+    var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",ColorMode="background",ProgressStyle="thin",Theme="dark",FocusId="example"};var s=ColorExample();Color bg=Look.StripSurface(true,false);
     using(var b=StripBitmap(s,c,200,48)){
      var windows=s.Quotas["example"].Windows;
      Color top=QuotaColors.ProgressSurface(bg,windows[0],true,c,true),bottom=QuotaColors.ProgressSurface(bg,windows[1],true,c,true);
@@ -198,7 +202,7 @@ namespace CpaTaskbar {
     }
    });
    test("剩余69和84与已用31和16的进度长度跟随显示切换",()=>{
-    var c=new AppConfig{ColorMode="both",Theme="light"};var surface=Look.StripSurface(false,false);
+    var c=new AppConfig{ColorMode="both",Theme="light",ProgressStyle="thin"};var surface=Look.StripSurface(false,false);
     var area=new Rectangle(0,0,324,48);var track=QuotaColors.ProgressBounds(area);
     Check(track.Width==300&&track.Height==6,"thicker track at taskbar size");
     foreach(bool showUsed in new[]{false,true})foreach(int used in new[]{31,16,0,100}){
@@ -246,7 +250,8 @@ namespace CpaTaskbar {
    test("旧简称完全不参与绘制，无左侧徽标占位",()=>{
     var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example"};var s=ColorExample();
     using(var a=StripBitmap(s,c,152,48)){
-     c.Alias="CL";using(var b=StripBitmap(s,c,152,48))for(int y=0;y<a.Height;y++)for(int x=0;x<a.Width;x++)Check(a.GetPixel(x,y)==b.GetPixel(x,y),"alias influences rendering");
+     var legacy=new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<AppConfig>("{\"Alias\":\"CL\",\"CpaUrl\":\"https://cpa.example.test\",\"CpampUrl\":\"https://cpamp.example.test\",\"Theme\":\"dark\",\"FocusId\":\"example\"}");
+     using(var b=StripBitmap(s,legacy,152,48))for(int y=0;y<a.Height;y++)for(int x=0;x<a.Width;x++)Check(a.GetPixel(x,y)==b.GetPixel(x,y),"alias influences rendering");
     }
    });
    test("配色设置按模式展开、预览同步，并拒绝倒置阈值",()=>{
@@ -380,6 +385,38 @@ namespace CpaTaskbar {
      for(int i=0;i<10;i++)strip.RefreshClock();Check(invalidations==0&&strip.PresentationCount==presented,"stable clock should stay idle");
      state.Quotas["example"].Windows[0].ResetAt=J.Now+59000;strip.RefreshClock();Check(transparent?strip.PresentationCount>presented:invalidations>0,"changed clock refreshes "+transparent);
     }
+   });
+   test("嵌入时只管理任务列表右边缘，兼容其他嵌入工具移动左边缘",()=>{
+    // Rebar 58..2148; the panel starts at rebar-relative 1885 (screen 1943).
+    var rebar=new Rectangle(58,1390,2090,50);
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(510,1390,1638,50),1885,0,1)==1433,"widget before task list: keep left edge, stop at panel");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(58,1390,2090,50),1885,0,1)==1885,"plain layout reserves");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(510,1390,1433,50),1885,1943,1)==1433,"owned edge stays");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(510,1390,1403,50),1885,1913,1)==1433,"owned edge follows the panel when the rebar grows back");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(960,1390,983,50),1885,1943,1)==983,"left edge shifted by another widget keeps ownership");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(510,1390,1300,50),1885,0,1)==null,"no overlap without ownership is left alone");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(510,1390,1500,50),1885,0,2)==null,"possible toolbar band to the right is left alone");
+    Check(TaskbarCompatibility.ReserveTarget(rebar,new Rectangle(1900,1390,248,50),1885,0,1)==null,"task list beyond panel untouched");
+   });
+   test("损坏配置备份后以默认设置启动，无法解密的密钥给出明确提示",()=>{
+    string temp=Path.Combine(Path.GetDirectoryName(Path.GetFullPath(report)),"corrupt-"+Guid.NewGuid().ToString("N"));string saved=AppConfig.Folder;
+    try{
+     AppConfig.Folder=temp;Directory.CreateDirectory(Path.GetDirectoryName(AppConfig.FileName));File.WriteAllText(AppConfig.FileName,"{not json");
+     var c=AppConfig.Load();Check(c.CpaUrl==""&&c.CpaSecret=="","defaults after corrupt file");
+     Check(AppConfig.LoadWarning!=""&&!File.Exists(AppConfig.FileName)&&Directory.GetFiles(Path.GetDirectoryName(AppConfig.FileName),"desktop-settings.json.corrupt-*").Length==1,"corrupt file backed up");
+     AppConfig.Load();Check(AppConfig.LoadWarning=="","warning cleared on next load");
+     Check(c.CodexUserAgent==AppConfig.DefaultCodexUserAgent&&c.AntigravityUserAgent==AppConfig.DefaultAntigravityUserAgent,"default user agents");
+    }finally{AppConfig.Folder=saved;if(Directory.Exists(temp))Directory.Delete(temp,true);}
+    string bogus=Convert.ToBase64String(new byte[]{1,2,3,4,5,6,7,8});
+    Check(!AppConfig.CanUnprotect(bogus)&&AppConfig.CanUnprotect(AppConfig.Protect("fixture-key"))&&AppConfig.CanUnprotect(""),"decryptability check");
+    try{AppConfig.Reveal(bogus,"CPA管理密钥");Check(false,"reveal must fail");}catch(Exception e){Check(e.Message.Contains("无法用当前Windows账号解密"),"friendly reveal error: "+e.Message);}
+    var service=new QuotaService(new AppConfig{CpaUrl="https://cpa.example.test",CpaSecret=bogus});int calls=0;
+    service.RequestOverride=(url,endpoint,key,body,ct)=>{calls++;return Task.FromResult<object>(Parse("{\"files\":[]}"));};
+    service.RefreshAsync(true).Wait();Check(calls==0&&service.State.Error.Contains("无法用当前Windows账号解密"),"undecryptable key error kept: "+service.State.Error);service.Dispose();
+   });
+   test("HTTP远程地址需要确认，本机和内网地址不提示",()=>{
+    Check(AppConfig.IsPlainRemote("http://cpa.example.test")&&AppConfig.IsPlainRemote("http://8.8.8.8:8317"),"remote http");
+    Check(!AppConfig.IsPlainRemote("https://cpa.example.test")&&!AppConfig.IsPlainRemote("http://127.0.0.1:8317")&&!AppConfig.IsPlainRemote("http://localhost:8317")&&!AppConfig.IsPlainRemote("http://192.168.1.5")&&!AppConfig.IsPlainRemote("http://10.0.0.2")&&!AppConfig.IsPlainRemote("http://172.20.0.1")&&!AppConfig.IsPlainRemote(""),"local or https");
    });
    test("安装版与便携版配置目录分离，兼容旧版同目录配置",()=>{
     string temp=Path.Combine(Path.GetDirectoryName(Path.GetFullPath(report)),"storage-"+Guid.NewGuid().ToString("N"));
@@ -536,7 +573,7 @@ namespace CpaTaskbar {
    }
   }
   public static void Render(string folder){
-   Directory.CreateDirectory(folder);AggregationTests.Render(folder);RenderColorModes(folder);RenderResetModes(folder);var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example",SelectedIds=new List<string>{"example"},CpampEnabled=true};var state=Example();
+   Directory.CreateDirectory(folder);ProgressStyleTests.Render(folder);AggregationTests.Render(folder);RenderColorModes(folder);RenderResetModes(folder);var c=new AppConfig{CpaUrl="https://cpa.example.test",CpampUrl="https://cpamp.example.test",Theme="dark",FocusId="example",SelectedIds=new List<string>{"example"},CpampEnabled=true};var state=Example();
    using(var image=new Bitmap(152,48)){using(var g=Graphics.FromImage(image))Look.Strip(g,new Rectangle(0,0,152,48),state,c);image.Save(Path.Combine(folder,"taskbar-example.png"));}
    using(var service=new QuotaService(c))using(var settings=new SettingsForm(c,service,state)){
     settings.Text="CPA状态栏设置 · 示例预览";settings.Opacity=0;settings.Show();System.Windows.Forms.Application.DoEvents();

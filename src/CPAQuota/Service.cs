@@ -13,7 +13,7 @@ namespace CpaTaskbar {
   readonly HttpClient http;
   CancellationTokenSource cancel=new CancellationTokenSource();
   AppConfig config;
-  string cpaKey="",cpampKey="";
+  string cpaKey="",cpampKey="",cpaKeyError="",cpampKeyError="";
   Snapshot current=new Snapshot();
   long accountsAt,accountAttempt;
   int generation;
@@ -24,13 +24,14 @@ namespace CpaTaskbar {
   public void SetSelection(List<string> ids,string focus){lock(gate){config.SelectedIds=ids.ToList();config.FocusId=focus;}}
   public Snapshot State{get{lock(gate)return new Snapshot{Accounts=current.Accounts.ToList(),Quotas=new Dictionary<string,QuotaState>(current.Quotas),History=new Dictionary<string,HistoryState>(current.History),Error=current.Error,Busy=working};}}
   public void Apply(AppConfig value){
-   var next=value.Clone();string a="",b="";string error="";
-   try{a=AppConfig.Unprotect(next.CpaSecret);if(next.CpampEnabled)b=AppConfig.Unprotect(next.CpampSecret);}catch{error="无法解密连接密钥，请用当前Windows账号重新保存连接。";}
+   var next=value.Clone();string a="",b="",errorA="",errorB="";
+   try{a=AppConfig.Reveal(next.CpaSecret,"CPA管理密钥");}catch(Exception e){errorA=e.Message;}
+   if(next.CpampEnabled)try{b=AppConfig.Reveal(next.CpampSecret,"CPAMP管理员密钥");}catch(Exception e){errorB=e.Message;}
    lock(gate){
     bool changed=config==null||config.CpaUrl!=next.CpaUrl||config.CpaSecret!=next.CpaSecret;
-    config=next;cpaKey=a;cpampKey=b;generation++;cancel.Cancel();cancel.Dispose();cancel=new CancellationTokenSource();
+    config=next;cpaKey=a;cpampKey=b;cpaKeyError=errorA;cpampKeyError=errorB;generation++;cancel.Cancel();cancel.Dispose();cancel=new CancellationTokenSource();
     if(changed){current=new Snapshot();accountsAt=0;}else{current.History.Clear();foreach(var q in current.Quotas.Values)q.AttemptedAt=0;}
-    accountAttempt=0;if(error!="")current.Error=error;
+    accountAttempt=0;if(errorA!="")current.Error=errorA;
    }
    Raise();
   }
@@ -52,9 +53,9 @@ namespace CpaTaskbar {
   }
   public async Task<string> TestAsync(AppConfig draft){
    using(var cts=new CancellationTokenSource()){
-    string key=AppConfig.Unprotect(draft.CpaSecret);
+    string key=AppConfig.Reveal(draft.CpaSecret,"CPA管理密钥");
     var list=QuotaParser.Accounts(await Request(draft.CpaUrl,"/v0/management/auth-files",key,null,cts.Token));
-    if(draft.CpampEnabled){string admin=AppConfig.Unprotect(draft.CpampSecret);var other=QuotaParser.Accounts(await Request(draft.CpampUrl,"/v0/management/auth-files",admin,null,cts.Token));if(list.Any()&&!list.Any(a=>other.Any(b=>b.Id==a.Id&&b.AuthIndex==a.AuthIndex)))throw new Exception("CPAMP的上游账号与当前CPA不一致。");}
+    if(draft.CpampEnabled){string admin=AppConfig.Reveal(draft.CpampSecret,"CPAMP管理员密钥");var other=QuotaParser.Accounts(await Request(draft.CpampUrl,"/v0/management/auth-files",admin,null,cts.Token));if(list.Any()&&!list.Any(a=>other.Any(b=>b.Id==a.Id&&b.AuthIndex==a.AuthIndex)))throw new Exception("CPAMP的上游账号与当前CPA不一致。");}
     return "连接成功，已读取 "+list.Count+" 个账号"+(draft.CpampEnabled?"；CPAMP也已连接。":"。");
    }
   }
@@ -71,10 +72,12 @@ namespace CpaTaskbar {
    return false;
   }
   public async Task RefreshAsync(bool force=false){
-   AppConfig c;string key,admin;int g;CancellationToken ct;
-   lock(gate){if(working||!force&&!NeedsRefresh(J.Now))return;working=true;c=config.Clone();key=cpaKey;admin=cpampKey;g=generation;ct=cancel.Token;}
+   AppConfig c;string key,admin,keyError,adminError;int g;CancellationToken ct;
+   lock(gate){if(working||!force&&!NeedsRefresh(J.Now))return;working=true;c=config.Clone();key=cpaKey;admin=cpampKey;keyError=cpaKeyError;adminError=cpampKeyError;g=generation;ct=cancel.Token;}
    Raise();
    try{
+    // An undecryptable key must surface as such instead of a misleading "please fill in the key".
+    if(keyError!=""){lock(gate){accountAttempt=J.Now;if(g==generation)current.Error=keyError;}Raise();return;}
     bool getList;lock(gate)getList=force||current.Error!=""&&J.Now-accountAttempt>=60000||accountsAt==0&&J.Now-accountAttempt>60000||accountsAt>0&&J.Now-accountsAt>600000;
     if(getList){
      lock(gate)accountAttempt=J.Now;
@@ -100,7 +103,7 @@ namespace CpaTaskbar {
       lock(gate){if(g==generation)current.Quotas[account.Id]=q;}Raise();
      })).ConfigureAwait(false);
     }
-    if(c.CpampEnabled&&!String.IsNullOrEmpty(admin)){
+    if(c.CpampEnabled&&(!String.IsNullOrEmpty(admin)||adminError!="")){
      Account focus=chosen.FirstOrDefault(a=>a.Id==c.FocusId)??chosen.FirstOrDefault();
      if(focus!=null){
       HistoryState old;lock(gate)current.History.TryGetValue(focus.Id,out old);
@@ -108,6 +111,7 @@ namespace CpaTaskbar {
       if(force||old==null||J.Now-old.AttemptedAt>=c.HistorySeconds*1000||old.TodayStart!=today){
        var h=new HistoryState{AttemptedAt=J.Now,TodayStart=today};
        try{
+        if(adminError!="")throw new Exception(adminError);
         var cpAccounts=QuotaParser.Accounts(await Request(c.CpampUrl,"/v0/management/auth-files",admin,null,ct).ConfigureAwait(false));
         if(!cpAccounts.Any(a=>a.Id==focus.Id&&a.AuthIndex==focus.AuthIndex))throw new Exception("CPAMP上游账号与当前CPA不一致。");
         long now=J.Now;
@@ -129,7 +133,7 @@ namespace CpaTaskbar {
     return QuotaParser.Unwrap(await Request(c.CpaUrl,"/v0/management/api-call",key,req,ct).ConfigureAwait(false));
    };
    if(a.Provider=="codex"){
-    header["User-Agent"]="codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)";
+    header["User-Agent"]=String.IsNullOrWhiteSpace(c.CodexUserAgent)?AppConfig.DefaultCodexUserAgent:c.CodexUserAgent;
     if(a.AccountId!="")header["Chatgpt-Account-Id"]=a.AccountId;
     payload=await call("GET","https://chatgpt.com/backend-api/wham/usage",null).ConfigureAwait(false);
     return new QuotaState{Windows=QuotaParser.Codex(payload),Plan=J.S(payload,"plan_type")};
@@ -144,7 +148,7 @@ namespace CpaTaskbar {
     payload=await call("POST","https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",J.Json(new{project=a.ProjectId})).ConfigureAwait(false);
     return new QuotaState{Windows=QuotaParser.Google(payload,true)};
    }
-   header["User-Agent"]="antigravity/hub/2.23.0 darwin/arm64";
+   header["User-Agent"]=String.IsNullOrWhiteSpace(c.AntigravityUserAgent)?AppConfig.DefaultAntigravityUserAgent:c.AntigravityUserAgent;
    Exception last=null;
    foreach(string method in new[]{"retrieveUserQuotaSummary","fetchAvailableModels"}){
     foreach(string host in new[]{"daily-cloudcode-pa.googleapis.com","daily-cloudcode-pa.sandbox.googleapis.com","cloudcode-pa.googleapis.com"}){

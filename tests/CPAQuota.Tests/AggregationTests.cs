@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -28,6 +28,7 @@ namespace CpaTaskbar {
     var state=Example();var c=Config();var w=Window(QuotaAggregation.Build(state,c),"5h");
     Check(w.Used==40&&w.Count==2&&w.Total==2&&Look.Value(w,true,c)=="60%","mean remaining");
     Check(QuotaAggregation.Caption(w,"5h余",c)=="均5h余[2/2]","mean caption");
+    c.ProgressStyle="thin";
     using(var mean=Strip(state,c,420,96)){
      c.QuotaDisplayMode="sum";Check(Look.Value(w,true,c)=="120%"&&w.Used==40,"sum remaining preserves true total");
      using(var sum=Strip(state,c,420,96)){

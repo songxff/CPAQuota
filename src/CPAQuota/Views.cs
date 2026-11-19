@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -10,7 +10,14 @@ namespace CpaTaskbar {
  public static class Look {
   public static Color Ink=Color.FromArgb(34,47,68),Muted=Color.FromArgb(99,112,133),Line=Color.FromArgb(221,227,237),Blue=Color.FromArgb(48,91,207);
   public static Font Font(float size=9,FontStyle style=FontStyle.Regular){return new Font("Segoe UI",size,style,GraphicsUnit.Point);}
-  public static bool Dark(AppConfig c){if(c.Theme=="dark")return true;if(c.Theme=="light")return false;try{using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))return Convert.ToInt32(k==null?0:k.GetValue("SystemUsesLightTheme",0))==0;}catch{return true;}}
+  static bool systemDark=true;static long systemDarkAt=long.MinValue;
+  // Painting happens every second; read the Windows theme from the registry at most every 5 seconds.
+  public static bool Dark(AppConfig c){
+   if(c.Theme=="dark")return true;if(c.Theme=="light")return false;
+   long now=J.Now;if(now-systemDarkAt<5000)return systemDark;
+   bool dark;try{using(var k=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))dark=Convert.ToInt32(k==null?0:k.GetValue("SystemUsesLightTheme",0))==0;}catch{dark=true;}
+   systemDark=dark;systemDarkAt=now;return dark;
+  }
   public static Color Status(double? remaining,bool dark){return !remaining.HasValue?(dark?Color.FromArgb(181,195,213):Muted):remaining<=10?(dark?Color.FromArgb(255,149,163):Color.FromArgb(186,45,66)):remaining<=25?(dark?Color.FromArgb(247,205,124):Color.FromArgb(150,93,15)):(dark?Color.FromArgb(151,227,195):Color.FromArgb(28,119,80));}
   public static void Text(Graphics g,string text,Font f,Color color,Rectangle rect,TextFormatFlags flags=TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPadding){TextRenderer.DrawText(g,text??"",f,rect,color,flags);}
   public static bool Fresh(QuotaState q,AppConfig c){return q!=null&&q.Error==""&&q.UpdatedAt>0&&J.Now-q.UpdatedAt<c.RefreshSeconds*2500;}
@@ -27,39 +34,62 @@ namespace CpaTaskbar {
   }
   public static double DisplayPercent(QuotaWindow w,AppConfig c){var summary=w as SummaryWindow;return Math.Round((c.ShowUsed?w.Used.Value:w.Remaining.Value)*(summary!=null&&c.QuotaDisplayMode=="sum"?summary.Count:1));}
   public static string Value(QuotaWindow w,bool fresh,AppConfig c){return !fresh||w==null||!w.Valid?"—":DisplayPercent(w,c).ToString()+"%";}
-  static Font stripLabel,stripNumber,stripTime;static float stripScale;
+  static Font stripLabel,stripNumber,stripTime;static float stripScale;static bool stripThick;
   public static void ReleaseStripFonts(){if(stripLabel!=null)stripLabel.Dispose();if(stripNumber!=null)stripNumber.Dispose();if(stripTime!=null)stripTime.Dispose();stripLabel=stripNumber=stripTime=null;}
-  static void StripFonts(float scale,out Font label,out Font number,out Font time){
-   if(stripLabel==null||Math.Abs(stripScale-scale)>.001f){
-    ReleaseStripFonts();stripScale=scale;
-    stripLabel=new Font("Microsoft YaHei UI",Math.Max(10,10.5f*scale),FontStyle.Bold,GraphicsUnit.Pixel);
+  static void StripFonts(float scale,bool thick,out Font label,out Font number,out Font time){
+   if(stripLabel==null||stripThick!=thick||Math.Abs(stripScale-scale)>.001f){
+    ReleaseStripFonts();stripScale=scale;stripThick=thick;
+    stripLabel=thick?new Font("Segoe UI",Math.Max(10,11*scale),FontStyle.Regular,GraphicsUnit.Pixel):new Font("Microsoft YaHei UI",Math.Max(10,10.5f*scale),FontStyle.Bold,GraphicsUnit.Pixel);
     stripNumber=new Font("Segoe UI",Math.Max(11,13*scale),FontStyle.Bold,GraphicsUnit.Pixel);
-    stripTime=new Font("Microsoft YaHei UI",Math.Max(9,9.5f*scale),FontStyle.Bold,GraphicsUnit.Pixel);
+    stripTime=thick?(Font)stripLabel.Clone():new Font("Microsoft YaHei UI",Math.Max(9,9.5f*scale),FontStyle.Bold,GraphicsUnit.Pixel);
    }
    label=stripLabel;number=stripNumber;time=stripTime;
   }
   public static Color StripSurface(bool dark,bool hover){return hover?(dark?Color.FromArgb(45,47,51):Color.FromArgb(244,244,241)):(dark?Color.FromArgb(34,36,40):Color.FromArgb(249,249,246));}
   static void StripText(Graphics g,AppConfig c,string text,Font font,Color color,Rectangle area,TextFormatFlags flags=TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPadding){
    if(!c.TransparentBackground){Text(g,text,font,color,area,flags);return;}
-   if(area.Width<=0||area.Height<=0)return;
-   var hint=g.TextRenderingHint;g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-   using(var format=(StringFormat)StringFormat.GenericTypographic.Clone())using(var brush=new SolidBrush(color)){
-    format.FormatFlags|=StringFormatFlags.NoWrap;format.Alignment=(flags&TextFormatFlags.Right)!=0?StringAlignment.Far:StringAlignment.Near;
-    format.LineAlignment=StringAlignment.Center;format.Trimming=StringTrimming.EllipsisCharacter;
-    g.DrawString(text??"",font,brush,area,format);
+   if(area.Width<=0||area.Height<=0||String.IsNullOrEmpty(text))return;
+   MaskedText(g,text,font,color,area,flags);
+  }
+  // Layered (per-pixel alpha) windows cannot use ClearType, and GDI+ grayscale text at fractional
+  // pixel sizes and half-pixel positions looks soft. Render the text with GDI (same hinting, grid
+  // fitting and layout as the opaque mode) as white on black, then use that coverage as the alpha
+  // of the requested colour, so glyph stems stay snapped to whole pixels on the transparent surface.
+  static void MaskedText(Graphics g,string text,Font font,Color color,Rectangle area,TextFormatFlags flags){
+   int w=area.Width,h=area.Height;var bounds=new Rectangle(0,0,w,h);int[] pixels=new int[w*h];
+   using(var mask=new Bitmap(w,h,System.Drawing.Imaging.PixelFormat.Format32bppRgb)){
+    using(var mg=Graphics.FromImage(mask)){mg.Clear(Color.Black);TextRenderer.DrawText(mg,text,font,bounds,Color.White,Color.Black,flags);}
+    var data=mask.LockBits(bounds,System.Drawing.Imaging.ImageLockMode.ReadOnly,System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+    try{for(int y=0;y<h;y++)System.Runtime.InteropServices.Marshal.Copy(data.Scan0+y*data.Stride,pixels,y*w,w);}finally{mask.UnlockBits(data);}
    }
-   g.TextRenderingHint=hint;
+   int rgb=color.ToArgb()&0xFFFFFF;bool any=false;
+   for(int i=0;i<pixels.Length;i++){
+    int p=pixels[i],r=(p>>16)&255,gr=(p>>8)&255,b=p&255;
+    // ClearType renders per-subpixel coverage; combine it into one grayscale coverage value.
+    int coverage=(r*30+gr*59+b*11)/100;
+    int alpha=coverage*color.A/255;pixels[i]=alpha==0?0:(alpha<<24)|rgb;if(alpha!=0)any=true;
+   }
+   if(!any)return;
+   using(var glyphs=new Bitmap(w,h,System.Drawing.Imaging.PixelFormat.Format32bppArgb)){
+    var data=glyphs.LockBits(bounds,System.Drawing.Imaging.ImageLockMode.WriteOnly,System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+    try{for(int y=0;y<h;y++)System.Runtime.InteropServices.Marshal.Copy(pixels,y*w,data.Scan0+y*data.Stride,w);}finally{glyphs.UnlockBits(data);}
+    var mode=g.CompositingMode;g.CompositingMode=System.Drawing.Drawing2D.CompositingMode.SourceOver;
+    g.DrawImageUnscaled(glyphs,area.X,area.Y);g.CompositingMode=mode;
+   }
   }
   public static void Strip(Graphics g,Rectangle rect,Snapshot s,AppConfig c,bool hover=false){
    bool dark=Dark(c);Color bg=StripSurface(dark,hover),fg=dark?Color.FromArgb(244,245,247):Color.FromArgb(20,23,27),muted=dark?Color.FromArgb(211,215,221):Color.FromArgb(52,55,60);
    // Fully transparent pixels pass mouse input through layered windows. A 1/255
    // alpha surface stays visually transparent while keeping the entire panel clickable.
    g.Clear(c.TransparentBackground?Color.FromArgb(1,0,0,0):bg);
-   int lift=Math.Max(2,Math.Min(6,rect.Height/24));
-   Account a=Focus(s,c);QuotaState q=QuotaAggregation.BarQuota(s,c);bool fresh=Fresh(q,c);
-   if(QuotaAggregation.Enabled(c)){var summary=QuotaAggregation.Build(s,c);a=summary.Accounts.FirstOrDefault()??a;}
+   int lift=QuotaColors.ThickBackground(c)?0:Math.Max(2,Math.Min(6,rect.Height/24));
+   Account a=Focus(s,c);QuotaState q;
+   if(QuotaAggregation.Enabled(c)){var summary=QuotaAggregation.Build(s,c);q=summary.Quota;a=summary.Accounts.FirstOrDefault()??a;}else q=Quota(s,a);
+   bool fresh=Fresh(q,c);
    float scale=Math.Max(.8f,rect.Height/48f)*c.FontSize/9f;
-   Font label,number,time;StripFonts(scale,out label,out number,out time);
+   // Thin keeps the complete 18336bd typography; thick retains e2ee03a typography.
+   bool thick=QuotaColors.Thick(c);float fontScale=thick?Math.Max(.8f,rect.Height/40f)*c.FontSize/9f:scale;
+   Font label,number,time;StripFonts(fontScale,thick,out label,out number,out time);
    {
     int inset=Math.Max(7,(int)(9*scale));
     int historyWidth=c.HistoryInBar&&c.CpampEnabled?(int)(74*scale):0;
@@ -94,7 +124,7 @@ namespace CpaTaskbar {
      var window=windows.FirstOrDefault();
      var area=new Rectangle(0,-lift,quotaWidth,rect.Height);
      QuotaColors.PaintProgress(g,area,window,fresh,c,bg,dark);
-     Color labelColor=muted;
+     Color labelColor=QuotaColors.ThickBackground(c)?QuotaColors.Readable(muted,bg,QuotaColors.ProgressSurface(bg,window,fresh,c,dark),dark):muted;
      Color normal=window==null?muted:fg;
      Color numberColor=QuotaColors.NumberColor(window,fresh,c,dark,bg,normal);
      var top=new Rectangle(0,-lift,quotaWidth,rect.Height/2);
@@ -111,9 +141,9 @@ namespace CpaTaskbar {
   }
   static void DrawStripRow(Graphics g,Rectangle area,QuotaWindow window,string caption,bool fresh,AppConfig c,bool dark,Color surface,Color muted,Color defaultNumber,Font label,Font number,Font time,int inset,int resetWidth){
    QuotaColors.PaintProgress(g,area,window,fresh,c,surface,dark);
-   Color labelColor=muted;
+   Color labelColor=QuotaColors.ThickBackground(c)?QuotaColors.Readable(muted,surface,QuotaColors.ProgressSurface(surface,window,fresh,c,dark),dark):muted;
    Color numberColor=QuotaColors.NumberColor(window,fresh,c,dark,surface,defaultNumber);
-   var textArea=area;if(QuotaColors.HasBackground(c))textArea.Height=Math.Max(1,QuotaColors.ProgressBounds(area).Top-area.Top-2);
+   var textArea=area;if(QuotaColors.HasBackground(c)&&!QuotaColors.Thick(c))textArea.Height=Math.Max(1,QuotaColors.ProgressBounds(area).Top-area.Top-2);
    DrawStripText(g,textArea,window,caption,fresh,c,labelColor,numberColor,label,number,time,inset,resetWidth);
   }
   static void DrawStripText(Graphics g,Rectangle area,QuotaWindow window,string caption,bool fresh,AppConfig c,Color labelColor,Color numberColor,Font label,Font number,Font time,int inset,int resetWidth){
@@ -179,9 +209,12 @@ namespace CpaTaskbar {
    if(IsHandleCreated&&Config.TransparentBackground)RenderLayered();else Invalidate();
   }
   string ClockKey(){
-   var a=Look.Focus(State,Config);var q=QuotaAggregation.BarQuota(State,Config);bool fresh=Look.Fresh(q,Config);
-   if(QuotaAggregation.Enabled(Config))a=QuotaAggregation.Build(State,Config).Accounts.FirstOrDefault()??a;
-   return fresh.ToString()+"|"+(QuotaAggregation.Enabled(Config)?QuotaAggregation.Build(State,Config).Key:"")+"|"+(QuotaReset.Enabled(Config)?String.Join("|",Look.BarWindows(q,Config,a).Select(w=>QuotaReset.Text(w,fresh,Config,J.Now))):"");
+   var a=Look.Focus(State,Config);QuotaState q;string key="";
+   // Called every second: build the aggregate once and reuse it for the quota, account and key.
+   if(QuotaAggregation.Enabled(Config)){var summary=QuotaAggregation.Build(State,Config);q=summary.Quota;a=summary.Accounts.FirstOrDefault()??a;key=summary.Key;}
+   else q=Look.Quota(State,a);
+   bool fresh=Look.Fresh(q,Config);
+   return fresh.ToString()+"|"+key+"|"+(QuotaReset.Enabled(Config)?String.Join("|",Look.BarWindows(q,Config,a).Select(w=>QuotaReset.Text(w,fresh,Config,J.Now))):"");
   }
   public void RefreshClock(){string next=ClockKey();if(next!=clockKey)RefreshState(State);}
   public void RefreshState(Snapshot s){
@@ -195,6 +228,6 @@ namespace CpaTaskbar {
   public Snapshot State;
   public AppConfig Config;
   public StripPreview(){DoubleBuffered=true;Height=56;AccessibleName="任务栏显示预览";}
-  protected override void OnPaint(PaintEventArgs e){e.Graphics.Clear(Color.White);if(Config!=null&&State!=null){int width=Math.Min(Width,TaskbarMetrics.Width(TaskbarMetrics.TotalWidth(Config),TaskbarMetrics.Dpi(),Config.PhysicalPixels));int height=Math.Max(24,Math.Min(Height-8,Native.Bounds(Native.FindWindow("Shell_TrayWnd",null)).Height));using(var b=new Bitmap(Math.Max(1,width),height)){using(var g=Graphics.FromImage(b))Look.Strip(g,new Rectangle(0,0,width,height),State,Config);var saved=e.Graphics.Save();using(var shape=QuotaColors.Rounded(new Rectangle(0,4,width,height),Math.Max(5,height/7)))e.Graphics.SetClip(shape,CombineMode.Intersect);e.Graphics.DrawImageUnscaled(b,0,4);e.Graphics.Restore(saved);}}}
+  protected override void OnPaint(PaintEventArgs e){e.Graphics.Clear(Color.White);if(Config!=null&&State!=null){int width=Math.Min(Width,TaskbarMetrics.Width(TaskbarMetrics.TotalWidth(Config),TaskbarMetrics.Dpi(),Config.PhysicalPixels));int height=Math.Max(24,Math.Min(Height-8,Native.Bounds(Native.FindWindow("Shell_TrayWnd",null)).Height));using(var b=new Bitmap(Math.Max(1,width),height)){using(var g=Graphics.FromImage(b))Look.Strip(g,new Rectangle(0,0,width,height),State,Config);var saved=e.Graphics.Save();using(var shape=QuotaColors.Rounded(new Rectangle(0,4,width,height),Math.Max(5,height/7)))e.Graphics.SetClip(shape,CombineMode.Intersect);using(var surface=new SolidBrush(Look.StripSurface(Look.Dark(Config),false)))e.Graphics.FillRectangle(surface,0,4,width,height);e.Graphics.DrawImageUnscaled(b,0,4);e.Graphics.Restore(saved);}}}
  }
 }

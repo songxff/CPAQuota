@@ -32,17 +32,23 @@ namespace CpaTaskbar {
   public bool CpampEnabled=false;
   public string CpampUrl="",CpampSecret="";
   public List<string> SelectedIds=new List<string>();
-  public string FocusId="",Model="",Alias="",Theme="auto";
+  public string FocusId="",Model="",Theme="auto";
+  // Upstream quota endpoints check the client identity. These defaults can be updated in
+  // data/desktop-settings.json when a provider stops accepting them, without rebuilding.
+  public const string DefaultCodexUserAgent="codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)",DefaultAntigravityUserAgent="antigravity/hub/2.23.0 darwin/arm64";
+  public string CodexUserAgent=DefaultCodexUserAgent,AntigravityUserAgent=DefaultAntigravityUserAgent;
   public bool ShowUsed=false,SingleLine=false,HistoryInBar=false,Rotate=false,Autostart=false;
   public int Width=152,Offset=4,FontSize=9,RefreshSeconds=120,HistorySeconds=300,RotateSeconds=12;
   public bool PhysicalPixels=false;
   public bool TransparentBackground=true;
   public string ColorMode="default";
+  public string ProgressStyle="thick";
   public string ResetTimeMode="off";
   public string QuotaDisplayMode="single";
   public int YellowUsedPercent=50,RedUsedPercent=90;
   public string LowUsageColor="#50D39A",MediumUsageColor="#F1C553",HighUsageColor="#F17788";
   public void NormalizeAppearance(){
+   if(!new[]{"thick","thin"}.Contains(ProgressStyle))ProgressStyle="thick";
    if(!new[]{"single","average","sum"}.Contains(QuotaDisplayMode))QuotaDisplayMode="single";
    if(!new[]{"off","time","countdown"}.Contains(ResetTimeMode))ResetTimeMode="off";
    if(!new[]{"default","background","numbers","both"}.Contains(ColorMode))ColorMode="default";
@@ -62,8 +68,29 @@ namespace CpaTaskbar {
   public static string FileName{get{return Path.Combine(Folder,"data","desktop-settings.json");}}
   public static string Protect(string value){return String.IsNullOrEmpty(value)?"":Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value),null,DataProtectionScope.CurrentUser));}
   public static string Unprotect(string value){return String.IsNullOrEmpty(value)?"":Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(value),null,DataProtectionScope.CurrentUser));}
+  public static bool CanUnprotect(string value){try{Unprotect(value);return true;}catch{return false;}}
+  public static string Reveal(string value,string name){
+   try{return Unprotect(value);}catch(Exception e){if(e is CryptographicException||e is FormatException)throw new Exception("已保存的"+name+"无法用当前Windows账号解密（可能更换了用户或电脑），请重新输入。");throw;}
+  }
+  public static bool IsPlainRemote(string url){
+   Uri u;if(String.IsNullOrWhiteSpace(url)||!Uri.TryCreate(url,UriKind.Absolute,out u)||u.Scheme!="http")return false;
+   if(u.IsLoopback)return false;
+   System.Net.IPAddress ip;if(!System.Net.IPAddress.TryParse(u.Host,out ip)||ip.AddressFamily!=System.Net.Sockets.AddressFamily.InterNetwork)return true;
+   byte[] b=ip.GetAddressBytes();
+   return !(b[0]==10||b[0]==172&&b[1]>=16&&b[1]<=31||b[0]==192&&b[1]==168||b[0]==169&&b[1]==254);
+  }
+  // Set by Load when an unreadable settings file was moved aside; shown once at startup.
+  public static string LoadWarning="";
   public static AppConfig Load(){
-   if(File.Exists(FileName)){try{var c=new JavaScriptSerializer().Deserialize<AppConfig>(File.ReadAllText(FileName,Encoding.UTF8));if(c!=null){c.SelectedIds=c.SelectedIds??new List<string>();c.NormalizeAppearance();return c;}}catch{throw new Exception("独立版配置无法读取，请检查data/desktop-settings.json。");}}
+   LoadWarning="";
+   if(File.Exists(FileName)){
+    try{var c=new JavaScriptSerializer().Deserialize<AppConfig>(File.ReadAllText(FileName,Encoding.UTF8));if(c!=null){c.SelectedIds=c.SelectedIds??new List<string>();if(String.IsNullOrWhiteSpace(c.CodexUserAgent))c.CodexUserAgent=DefaultCodexUserAgent;if(String.IsNullOrWhiteSpace(c.AntigravityUserAgent))c.AntigravityUserAgent=DefaultAntigravityUserAgent;c.NormalizeAppearance();return c;}}
+    catch(Exception e){
+     string backup=FileName+".corrupt-"+DateTime.Now.ToString("yyyyMMdd-HHmmss");
+     try{File.Move(FileName,backup);LoadWarning="配置文件无法读取（"+e.Message+"），已备份为 "+Path.GetFileName(backup)+"，将使用默认设置启动，请重新填写连接。";}
+     catch(Exception moveError){throw new Exception("配置文件无法读取且无法备份："+e.Message+"；"+moveError.Message);}
+    }
+   }
    return new AppConfig();
   }
 

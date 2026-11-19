@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
@@ -14,7 +14,7 @@ namespace CpaTaskbar {
    ColumnCount=2;RowCount=2;AutoSize=true;AutoSizeMode=AutoSizeMode.GrowAndShrink;Margin=Padding.Empty;
    ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));
    RowStyles.Add(new RowStyle(SizeType.AutoSize));RowStyles.Add(new RowStyle(SizeType.AutoSize));
-   string[] labels={"默认（简洁数字）","仅细进度条","仅百分比数字","细进度条 + 百分比数字"};
+   string[] labels={"默认（简洁数字）","仅进度条","仅百分比数字","进度条 + 百分比数字"};
    for(int i=0;i<choices.Length;i++){
     int index=i;var radio=new RadioButton{Text=labels[i],AutoSize=true,Anchor=AnchorStyles.Left,Margin=new Padding(0,4,8,4),AccessibleName=labels[i]};
     choices[i]=radio;Controls.Add(radio,i%2,i/2);
@@ -65,6 +65,8 @@ namespace CpaTaskbar {
   readonly CheckBox used=new CheckBox{Text="显示已用百分比（默认显示剩余额度）",AutoSize=true},historyBar=new CheckBox{Text="在任务栏右侧追加今日Token",AutoSize=true},single=new CheckBox{Text="使用单行紧凑显示",AutoSize=true},rotate=new CheckBox{Text="自动轮播已勾选的账号",AutoSize=true},autostart=new CheckBox{Text="登录Windows后自动启动",AutoSize=true};
   readonly NumericUpDown width=new NumericUpDown{Name="taskbarWidth",Minimum=80,Maximum=840},offset=new NumericUpDown{Name="taskbarOffset",Minimum=0,Maximum=800},fontSize=new NumericUpDown{Minimum=8,Maximum=12},interval=new NumericUpDown{Minimum=60,Maximum=3600,Increment=60},rotateInterval=new NumericUpDown{Minimum=5,Maximum=120};
   readonly ComboBox theme=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList};
+  readonly ComboBox progressStyle=new ComboBox{Name="quotaProgressStyle",AccessibleName="进度条样式",DropDownStyle=ComboBoxStyle.DropDownList};
+  static readonly string[] ProgressStyles={"thick","thin"};
   readonly CheckBox transparent=new CheckBox{Name="transparentBackground",Text="透明背景（融入任务栏）",AutoSize=true};
   readonly Label feedback=new Label{Name="settingsFeedback",AutoSize=true,Dock=DockStyle.Top,ForeColor=Look.Muted};
   readonly StripPreview preview=new StripPreview(),colorPreview=new StripPreview{Name="quotaColorPreview"},resetPreview=new StripPreview{Name="quotaResetPreview"};
@@ -91,7 +93,7 @@ namespace CpaTaskbar {
    var connection=new TabPage("连接");var display=new TabPage("账号与指标");var appearance=new TabPage("外观与启动");var colors=new TabPage("额度配色");
    tabs.TabPages.AddRange(new[]{connection,display,appearance,colors});
    var links=Grid(connection);
-   Add(links,"CPA服务地址",cpaUrl);Add(links,"CPA管理密钥",cpaKey);Hint(links,c.CpaSecret!=""?"管理密钥已加密保存，留空保持。更换地址时请重新输入。":"填写CPA管理页面的密钥，模型API Key不适用。");
+   Add(links,"CPA服务地址",cpaUrl);Add(links,"CPA管理密钥",cpaKey);Hint(links,c.CpaSecret!=""&&!AppConfig.CanUnprotect(c.CpaSecret)?"已保存的管理密钥无法用当前Windows账号解密（可能更换了用户或电脑），请重新输入。":c.CpaSecret!=""?"管理密钥已加密保存，留空保持。更换地址时请重新输入。":"填写CPA管理页面的密钥，模型API Key不适用。");
    Add(links,"",cpamp);Add(links,"CPAMP服务地址",cpampUrl);Add(links,"CPAMP管理员密钥",cpampKey);Hint(links,c.CpampSecret!=""?"CPAMP管理员密钥已保存，留空保持。":"可选。启用后显示当前账号今日/本月Token与请求数。");
    var test=new Button{Text="测试连接",AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(8,4,8,4)};Add(links,"",test);
    Hint(links,"密钥只保存为当前Windows用户的DPAPI密文，程序直接请求服务，不需要Node或本地API端口。");
@@ -101,7 +103,9 @@ namespace CpaTaskbar {
 
    Add(targets,"百分比含义",used);Add(targets,"额度重置时间",resetMode);resetPreview.Height=64;Add(targets,"显示预览",resetPreview);Hint(targets,"分别显示每个额度周期的重置时间，与查询刷新间隔无关。具体时间跟随Windows时区；倒计时本地自动更新。开启后可在“外观与启动”调大宽度（双行建议260—320像素）。");Add(targets,"可选历史",historyBar);Add(targets,"账号切换",rotate);Add(targets,"轮播间隔（秒）",rotateInterval);
    var looks=Grid(appearance);theme.Items.AddRange(new object[]{"跟随Windows系统","深色","浅色"});
-   Add(looks,"主题",theme);Add(looks,"背景",transparent);Add(looks,"宽度（像素）",width);Add(looks,"左移（像素）",offset);Add(looks,"字号",fontSize);Add(looks,"排版",single);Add(looks,"额度刷新（秒）",interval);Add(looks,"启动",autostart);
+   progressStyle.Items.AddRange(new object[]{"粗进度条","细进度条"});
+    Add(looks,"进度条样式",progressStyle);
+    Add(looks,"主题",theme);Add(looks,"背景",transparent);Add(looks,"宽度（像素）",width);Add(looks,"左移（像素）",offset);Add(looks,"字号",fontSize);Add(looks,"排版",single);Add(looks,"额度刷新（秒）",interval);Add(looks,"启动",autostart);
    Hint(looks,"宽度和偏移按屏幕实际像素应用，不再叠加Windows缩放。偏移越大，面板越靠左。");
    preview.Height=64;Add(looks,"任务栏预览",preview);Hint(looks,"点击任务栏数字打开详情，右键打开菜单。历史默认在详情里展示，也可追加到任务栏。");
    var coloring=Grid(colors);
@@ -109,7 +113,7 @@ namespace CpaTaskbar {
 
    Add(coloring,"着色方式",colorMode);
    colorPreview.Height=64;Add(coloring,"任务栏预览",colorPreview);
-   Hint(coloring,"进度条长度与显示的百分比一致，随剩余/已用切换；颜色仍按已用比例判断，额度越少越接近警戒色。");
+   Hint(coloring,"粗进度条使用整行底色，按已用比例填充；细进度条跟随显示的剩余/已用百分比。可在“外观与启动”切换样式，颜色均按已用比例判断。");
    ConfigureGrid(colorOptions);
    Add(colorOptions,"低使用率",lowColor);Add(colorOptions,"中等使用率",mediumColor);Add(colorOptions,"高使用率",highColor);
    Add(colorOptions,"黄色起点（%）",yellowUsed);Add(colorOptions,"红色起点（%）",redUsed);
@@ -136,12 +140,16 @@ namespace CpaTaskbar {
    foreach(var button in new[]{lowColor,mediumColor,highColor})button.Click+=(s,e)=>PickColor((Button)s);
    resetColors.Click+=(s,e)=>{yellowUsed.Value=50;redUsed.Value=90;SetColor(lowColor,"#50D39A");SetColor(mediumColor,"#F1C553");SetColor(highColor,"#F17788");UpdatePreview(service.State);};
    theme.SelectedIndex=c.Theme=="dark"?1:c.Theme=="light"?2:0;
+    progressStyle.SelectedIndex=Math.Max(0,Array.IndexOf(ProgressStyles,c.ProgressStyle));
    cpamp.CheckedChanged+=(s,e)=>{cpampUrl.Enabled=cpampKey.Enabled=cpamp.Checked;UpdatePreview(state);};cpampUrl.Enabled=cpampKey.Enabled=cpamp.Checked;
    accounts.ItemCheck+=(s,e)=>{if(!updating){dirtyAccounts=true;if(IsHandleCreated)BeginInvoke((Action)(()=>{if(!IsDisposed)UpdatePreview(service.State);}));}};
-   foreach(Control input in new Control[]{width,offset,fontSize,theme,transparent,single,used,historyBar,model,focus}){var n=input as NumericUpDown;if(n!=null)n.ValueChanged+=(s,e)=>UpdatePreview(service.State);var b=input as CheckBox;if(b!=null)b.CheckedChanged+=(s,e)=>UpdatePreview(service.State);var combo=input as ComboBox;if(combo!=null)combo.SelectedIndexChanged+=(s,e)=>UpdatePreview(service.State);var text=input as TextBox;if(text!=null)text.TextChanged+=(s,e)=>UpdatePreview(service.State);}
+   foreach(Control input in new Control[]{width,offset,fontSize,theme,progressStyle,transparent,single,used,historyBar,model,focus}){var n=input as NumericUpDown;if(n!=null)n.ValueChanged+=(s,e)=>UpdatePreview(service.State);var b=input as CheckBox;if(b!=null)b.CheckedChanged+=(s,e)=>UpdatePreview(service.State);var combo=input as ComboBox;if(combo!=null)combo.SelectedIndexChanged+=(s,e)=>UpdatePreview(service.State);var text=input as TextBox;if(text!=null)text.TextChanged+=(s,e)=>UpdatePreview(service.State);}
    test.Click+=async(s,e)=>{test.Enabled=false;feedback.ForeColor=Look.Muted;feedback.Text="正在连接…";try{feedback.Text=await service.TestAsync(Draft(false));feedback.ForeColor=Color.SeaGreen;}catch(Exception ex){feedback.Text=ex.Message;feedback.ForeColor=Color.Firebrick;}finally{test.Enabled=true;}};
    cancel.Click+=(s,e)=>Close();
-   save.Click+=(s,e)=>{try{var next=Draft(true);next.Save();next.SetAutostart();if(Applied!=null)Applied(next);Close();}catch(Exception ex){feedback.Text=ex.Message;feedback.ForeColor=Color.Firebrick;}};
+   save.Click+=(s,e)=>{try{var next=Draft(true);
+     var plain=new[]{next.CpaUrl,next.CpampEnabled?next.CpampUrl:""}.Where(AppConfig.IsPlainRemote).ToList();
+     if(plain.Count>0&&MessageBox.Show(this,"以下地址使用HTTP，管理密钥会以明文在网络上传输：\n"+String.Join("\n",plain)+"\n\n建议改用HTTPS。仍要保存吗？","CPA 状态栏",MessageBoxButtons.YesNo,MessageBoxIcon.Warning,MessageBoxDefaultButton.Button2)!=DialogResult.Yes)return;
+     next.Save();next.SetAutostart();if(Applied!=null)Applied(next);Close();}catch(Exception ex){feedback.Text=ex.Message;feedback.ForeColor=Color.Firebrick;}};
    AcceptButton=save;CancelButton=cancel;UpdateAccounts(state);UpdatePreview(state);
    AutoScaleMode=AutoScaleMode.Dpi;AutoScaleDimensions=new SizeF(96,96);ResumeLayout(true);
   }
@@ -196,7 +204,7 @@ namespace CpaTaskbar {
   AppConfig VisualDraft(){
    var displayMode=DisplayModes[Math.Max(0,quotaDisplay.SelectedIndex)];
    var c=original.Clone();c.ResetTimeMode=ResetModes[Math.Max(0,resetMode.SelectedIndex)];c.Model=model.Text.Trim();c.ShowUsed=used.Checked;c.HistoryInBar=historyBar.Checked;c.SingleLine=single.Checked;c.CpampEnabled=cpamp.Checked;c.Width=(int)width.Value;c.Offset=(int)offset.Value;c.PhysicalPixels=true;c.FontSize=(int)fontSize.Value;c.Theme=theme.SelectedIndex==1?"dark":theme.SelectedIndex==2?"light":"auto";
-   c.TransparentBackground=transparent.Checked;
+   c.TransparentBackground=transparent.Checked;c.ProgressStyle=ProgressStyles[Math.Max(0,progressStyle.SelectedIndex)];
    c.QuotaDisplayMode=displayMode;if(accounts.Items.Count>0)c.SelectedIds=accounts.CheckedItems.Cast<Account>().Select(a=>a.Id).ToList();
    c.ColorMode=ColorModes[Math.Max(0,colorMode.SelectedIndex)];c.YellowUsedPercent=(int)yellowUsed.Value;c.RedUsedPercent=(int)redUsed.Value;
    c.LowUsageColor=(string)lowColor.Tag;c.MediumUsageColor=(string)mediumColor.Tag;c.HighUsageColor=(string)highColor.Tag;
@@ -209,6 +217,8 @@ namespace CpaTaskbar {
    c.CpaUrl=AppConfig.Url(cpaUrl.Text);c.CpampUrl=String.IsNullOrWhiteSpace(cpampUrl.Text)&&!cpamp.Checked?"":AppConfig.Url(cpampUrl.Text);
    if(c.CpaUrl!=original.CpaUrl&&cpaKey.Text=="")throw new Exception("更换CPA地址时需要重新输入管理密钥。");
    if(c.CpampUrl!=original.CpampUrl&&c.CpampEnabled&&cpampKey.Text=="")throw new Exception("更换CPAMP地址时需要重新输入管理员密钥。");
+   if(cpaKey.Text==""&&c.CpaSecret!=""&&!AppConfig.CanUnprotect(c.CpaSecret))throw new Exception("已保存的CPA管理密钥无法用当前Windows账号解密，请重新输入。");
+   if(c.CpampEnabled&&cpampKey.Text==""&&c.CpampSecret!=""&&!AppConfig.CanUnprotect(c.CpampSecret))throw new Exception("已保存的CPAMP管理员密钥无法用当前Windows账号解密，请重新输入。");
    if(cpaKey.Text!="")c.CpaSecret=AppConfig.Protect(cpaKey.Text.Trim());if(cpampKey.Text!="")c.CpampSecret=AppConfig.Protect(cpampKey.Text.Trim());
    if(c.CpaSecret=="")throw new Exception("请填写CPA管理密钥。");if(c.CpampEnabled&&c.CpampSecret=="")throw new Exception("启用CPAMP需要管理员密钥。");
    c.RefreshSeconds=(int)interval.Value;c.Rotate=rotate.Checked&&!QuotaAggregation.Enabled(c);c.RotateSeconds=(int)rotateInterval.Value;c.Autostart=autostart.Checked;

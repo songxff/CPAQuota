@@ -46,6 +46,9 @@ namespace CpaTaskbar {
   [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr hwnd);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int RegisterWindowMessage(string name);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool PostMessage(IntPtr hwnd,int message,IntPtr wparam,IntPtr lparam);
+  [DllImport("user32.dll")]static extern IntPtr SendMessage(IntPtr hwnd,int message,IntPtr wparam,IntPtr lparam);
+  public static int BandCount(IntPtr rebar){return rebar==IntPtr.Zero?0:(int)SendMessage(rebar,0x040C,IntPtr.Zero,IntPtr.Zero);} // RB_GETBANDCOUNT
+  [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint processId);
   [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetClassName(IntPtr hwnd,StringBuilder text,int max);
   public static Rectangle Bounds(IntPtr hwnd){Rect r;return GetWindowRect(hwnd,out r)?r.Bounds:Rectangle.Empty;}
   public static string Class(IntPtr hwnd){var sb=new StringBuilder(256);GetClassName(hwnd,sb,256);return sb.ToString();}
@@ -66,6 +69,21 @@ namespace CpaTaskbar {
    // Windows 11 can expose legacy taskbar windows which are not the displayed taskbar.
    return build>0&&build<22000&&rebarVisible&&tasklistVisible&&taskbar.Width>taskbar.Height;
   }
+  // Width the task list should have so its right edge stops at the embedded panel (panelX is
+  // relative to the rebar), or null when it must be left alone. This dock owns only the right
+  // edge: other taskbar widgets (e.g. LiteMonitor) move the task list's left edge, and that is
+  // kept as is. Ownership is tracked by the right edge we last set (ownedRight, screen x), which
+  // survives those widgets shifting the left edge. Without ownership the list is only shrunk
+  // when it overlaps the panel, and never when a second rebar band (a toolbar) may sit to its right.
+  public static int? ReserveTarget(Rectangle rebar,Rectangle tasklist,int panelX,int ownedRight,int bands){
+   if(rebar.IsEmpty||tasklist.IsEmpty)return null;
+   int panelLeft=rebar.Left+panelX;
+   bool owned=ownedRight>0&&Math.Abs(tasklist.Right-ownedRight)<=1;
+   if(!owned&&tasklist.Right<=panelLeft)return null;
+   if(!owned&&bands>1&&tasklist.Right<rebar.Right-2)return null;
+   int width=panelLeft-tasklist.Left;
+   return width<64?(int?)null:width;
+  }
   public static bool IsFullscreenApp(Rectangle foreground,Rectangle monitor,string windowClass){
    return windowClass!="Progman"&&windowClass!="WorkerW"&&windowClass!="Shell_TrayWnd"&&windowClass!="Shell_SecondaryTrayWnd"&&!monitor.IsEmpty&&foreground.Contains(monitor);
   }
@@ -82,8 +100,7 @@ namespace CpaTaskbar {
  public sealed class TaskbarDock:IDisposable {
   readonly Form form;
   IntPtr taskbar,rebar,tasklist;
-  int squeezed=-1,reserved=0;
-  Rectangle original;
+  int ownedRight=0,reserved=0;
   bool embedded;
   public string Mode{get;private set;}
   public TaskbarDock(Form value){form=value;Mode="等待任务栏";}
@@ -99,19 +116,26 @@ namespace CpaTaskbar {
    IntPtr list=bar==IntPtr.Zero?IntPtr.Zero:Native.FindWindowEx(bar,IntPtr.Zero,"MSTaskSwWClass",null);
    if(list==IntPtr.Zero&&bar!=IntPtr.Zero)list=Native.FindWindowEx(bar,IntPtr.Zero,"MSTaskListWClass",null);
    if(TaskbarCompatibility.CanEmbed(TaskbarCompatibility.WindowsBuild,bar!=IntPtr.Zero&&Native.IsWindowVisible(bar),list!=IntPtr.Zero&&Native.IsWindowVisible(list),shellRect)){
-    if(taskbar!=shell||rebar!=bar||tasklist!=list){Restore();taskbar=shell;rebar=bar;tasklist=list;squeezed=-1;}
+    if(taskbar!=shell||rebar!=bar||tasklist!=list){Restore();taskbar=shell;rebar=bar;tasklist=list;}
     var br=Native.Bounds(bar);var lr=Native.Bounds(list);
     if(br.Width<=width+80){form.Hide();Mode="任务栏空间不足";return;}
     int x=br.Width-width-offset,y=0,h=br.Height;
-    int relX=lr.Left-br.Left,relY=lr.Top-br.Top;
-    // A nonzero origin belongs to an existing toolbar layout; leave that layout intact.
-    bool externalLayout=relX>0||relY>0;
-    if(externalLayout){if(reserved>0)Restore();}
-    else{
-     int target=Math.Max(64,x-relX);
-     if(reserved==0)original=new Rectangle(relX,relY,br.Width-relX,lr.Height);
-     if(lr.Width!=target)Native.MoveWindow(list,relX,relY,target,lr.Height,true);
-     reserved=Math.Max(0,br.Width-relX-target);squeezed=target;
+    int bands=Native.BandCount(bar);
+    int? reserve=TaskbarCompatibility.ReserveTarget(br,lr,x,ownedRight,bands);
+    if(!reserve.HasValue){
+     // Still at our edge but no room left: give it back. Moved by someone else: just forget it.
+     if(ownedRight>0&&Math.Abs(lr.Right-ownedRight)<=1)Restore();else{ownedRight=0;reserved=0;}
+    }else{
+     int rel=lr.Left-br.Left;
+     if(lr.Width!=reserve.Value){
+      // With a single band, a left offset comes from another embedded widget (e.g. LiteMonitor). Such
+      // widgets re-apply their layout from the task list's current left edge on every change while
+      // keeping its right edge, so resizing in place makes them drift right. Starting from the rebar
+      // origin lets them land back in their own place; the right edge we set is preserved.
+      if(bands<=1&&rel>16)Native.MoveWindow(list,0,lr.Top-br.Top,x,lr.Height,true);
+      else Native.MoveWindow(list,rel,lr.Top-br.Top,reserve.Value,lr.Height,true);
+     }
+     ownedRight=br.Left+x;reserved=Math.Max(0,br.Right-ownedRight);
     }
     if(Native.GetParent(form.Handle)!=bar){
      int style=Native.GetWindowLong(form.Handle,Native.GWL_STYLE);
@@ -148,11 +172,18 @@ namespace CpaTaskbar {
   }
   public object Diagnostics(){return new{mode=Mode,windowsBuild=TaskbarCompatibility.WindowsBuild,taskbar=Native.Bounds(taskbar),parent=Native.Class(Native.GetParent(form.Handle)),widget=ScreenBounds,visible=Native.IsWindowVisible(form.Handle),tasklist=Native.Bounds(tasklist),reservedWidth=reserved};}
   public void Restore(){
-   if(tasklist!=IntPtr.Zero&&Native.IsWindow(tasklist)&&reserved>0){
+   if(tasklist!=IntPtr.Zero&&Native.IsWindow(tasklist)&&rebar!=IntPtr.Zero&&ownedRight>0){
     var rect=Native.Bounds(tasklist);
-    if(Math.Abs(rect.Width-squeezed)<=1){var bar=Native.Bounds(rebar);Native.MoveWindow(tasklist,original.X,original.Y,Math.Max(original.Width,bar.Width-original.X),original.Height,true);}
+    if(Math.Abs(rect.Right-ownedRight)<=1){
+     var bar=Native.Bounds(rebar);
+     // With a single band, return to Explorer's default layout; widgets that shift the left
+     // edge (LiteMonitor) then re-apply their own layout from the rebar origin. Extending the
+     // width in place instead would make such a widget shift itself right once more.
+     if(Native.BandCount(rebar)<=1)Native.MoveWindow(tasklist,0,0,bar.Width,bar.Height,true);
+     else Native.MoveWindow(tasklist,rect.Left-bar.Left,rect.Top-bar.Top,bar.Right-rect.Left,rect.Height,true);
+    }
    }
-   squeezed=-1;reserved=0;
+   ownedRight=0;reserved=0;
   }
   public void Dispose(){Restore();}
  }

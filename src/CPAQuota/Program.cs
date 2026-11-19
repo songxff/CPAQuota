@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -27,7 +27,7 @@ namespace CpaTaskbar {
   readonly Control ui=new Control();
   readonly System.Windows.Forms.Timer tick=new System.Windows.Forms.Timer{Interval=1000};
   readonly CommandHost commands;
-  bool closing,refreshingUi;
+  bool closing,refreshingUi,statusDirty;
   int queuedUi,seconds;
   long lastRotate,lastStatus,lastDetailsClick;
   public TaskbarApp(AppConfig c,bool openDetails=false){
@@ -38,20 +38,24 @@ namespace CpaTaskbar {
    service.Changed+=OnChanged;
    tick.Tick+=(s,e)=>{
     if(closing)return;
-    if(strip.IsDisposed)strip=NewStrip();
-    try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);}catch{ /* Explorer重建时下一轮重试，托盘入口保持可用 */ }
-    strip.RefreshClock();
-    if(details!=null&&details.Visible)details.Canvas.RefreshClock();
-    if(settings!=null&&!settings.IsDisposed)settings.RefreshClock();
-    if(++seconds%5==0)Refresh(false);
-    if(Config.Rotate&&!QuotaAggregation.Enabled(Config)&&J.Now-lastRotate>Config.RotateSeconds*1000){
-     var a=service.State.Accounts.Where(x=>x.Supported&&Config.SelectedIds.Contains(x.Id)).ToList();
-     if(a.Count>1){int index=a.FindIndex(x=>x.Id==Config.FocusId);SelectAccount(a[(index+1+a.Count)%a.Count].Id,false);}lastRotate=J.Now;
-    }
-    if(J.Now-lastStatus>30000){WriteStatus();lastStatus=J.Now;}
+    // The timer fires every second; log failures with details (throttled) instead of
+    // letting the same exception reach ThreadException once per second.
+    try{
+     if(strip.IsDisposed)strip=NewStrip();
+     try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);}catch(Exception error){Program.Log("任务栏定位失败，下一秒重试",error);}
+     strip.RefreshClock();
+     if(details!=null&&details.Visible)details.Canvas.RefreshClock();
+     if(settings!=null&&!settings.IsDisposed)settings.RefreshClock();
+     if(++seconds%5==0)Refresh(false);
+     if(Config.Rotate&&!QuotaAggregation.Enabled(Config)&&J.Now-lastRotate>Config.RotateSeconds*1000){
+      var a=service.State.Accounts.Where(x=>x.Supported&&Config.SelectedIds.Contains(x.Id)).ToList();
+      if(a.Count>1){int index=a.FindIndex(x=>x.Id==Config.FocusId);SelectAccount(a[(index+1+a.Count)%a.Count].Id,false);}lastRotate=J.Now;
+     }
+     if(statusDirty&&J.Now-lastStatus>2000||J.Now-lastStatus>30000)WriteStatus();
+    }catch(Exception error){Program.Log("定时刷新异常",error);}
    };
    tick.Start();RefreshUI();Refresh(true);
-   if(String.IsNullOrEmpty(c.CpaSecret))ui.BeginInvoke((Action)ShowSettings);
+   if(String.IsNullOrEmpty(c.CpaSecret)||!AppConfig.CanUnprotect(c.CpaSecret))ui.BeginInvoke((Action)ShowSettings);
    else if(openDetails)ui.BeginInvoke((Action)ShowDetails);
   }
   QuotaStrip NewStrip(){var f=new QuotaStrip(Config);f.Clicked+=ToggleDetails;f.ContextMenuStrip=menu;return f;}
@@ -78,12 +82,14 @@ namespace CpaTaskbar {
    }
    strip.Config=Config;strip.RefreshState(state);
    try{strip.Docking.Update(DesiredWidth(),Config.Offset,Config.PhysicalPixels);}catch{}
-   if(details!=null){refreshingUi=true;try{details.UpdateData(state,Config);}finally{refreshingUi=false;}}
+   // Hidden details are rebuilt by ShowDetails when opened; skip rebuilding all controls in the background.
+   if(details!=null&&details.Visible){refreshingUi=true;try{details.UpdateData(state,Config);}finally{refreshingUi=false;}}
    if(settings!=null&&!settings.IsDisposed)settings.UpdateAccounts(state);
    var account=Look.Focus(state,Config);
    string tip=QuotaAggregation.Enabled(Config)?QuotaAggregation.Build(state,Config).Title(Config):account==null?"CPA 额度状态栏":"CPA 额度 · "+J.Provider(account.Provider);
    if(tip.Length<=63)tray.Text=tip;
-   WriteStatus();
+   // One refresh raises several change events; the timer writes the status file at most every 2 seconds.
+   statusDirty=true;
   }
   void SelectAccount(string id,bool persist){
    if(Config.FocusId==id)return;Config.FocusId=id;service.SetSelection(Config.SelectedIds,id);
@@ -106,8 +112,8 @@ namespace CpaTaskbar {
    settings.Show();settings.Activate();Native.SetForegroundWindow(settings.Handle);
   }
   void WriteStatus(){
-   try{lastStatus=J.Now;Directory.CreateDirectory(Path.Combine(AppConfig.Folder,"data"));var s=service.State;var a=Look.Focus(s,Config);
-    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version="0.6.0",pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode,transparentBackground=Config.TransparentBackground},presentation=new{lastPresentedAt=strip.LastPresentedAt,count=strip.PresentationCount},detailsVisible=details!=null&&details.Visible,accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
+   try{lastStatus=J.Now;statusDirty=false;Directory.CreateDirectory(Path.Combine(AppConfig.Folder,"data"));var s=service.State;var a=Look.Focus(s,Config);
+    File.WriteAllText(Path.Combine(AppConfig.Folder,"data","desktop-status.json"),J.Json(new{app="CPAQuotaTaskbar",version=Program.Version,pid=System.Diagnostics.Process.GetCurrentProcess().Id,dock=strip.Docking.Diagnostics(),appearance=new{width=Config.Width,offset=Config.Offset,physicalPixels=Config.PhysicalPixels,fontSize=Config.FontSize,theme=Config.Theme,singleLine=Config.SingleLine,resetTimeMode=Config.ResetTimeMode,transparentBackground=Config.TransparentBackground,progressStyle=Config.ProgressStyle},presentation=new{lastPresentedAt=strip.LastPresentedAt,count=strip.PresentationCount},detailsVisible=details!=null&&details.Visible,accountCount=s.Accounts.Count,provider=a==null?"":a.Provider,busy=s.Busy,error=s.Error,quotaError=Look.Quota(s,a)==null?"":Look.Quota(s,a).Error,quotaUpdatedAt=Look.Quota(s,a)==null?0:Look.Quota(s,a).UpdatedAt,historyError=Look.History(s,a)==null?"":Look.History(s,a).Error,historyUpdatedAt=Look.History(s,a)==null?0:Look.History(s,a).UpdatedAt,updatedAt=J.Now}),new System.Text.UTF8Encoding(false));}
    catch{}
   }
   protected override void ExitThreadCore(){
@@ -133,7 +139,13 @@ namespace CpaTaskbar {
     if(args.Length>1&&args[0]=="--inspect-shell"){File.WriteAllText(args[1],J.Json(ShellDiagnostics.Capture()));return 0;}
     if(args.Contains("--uninstall-cleanup")){
      IntPtr host=Native.FindWindow(null,CommandHost.InstanceCaption);
-     if(host!=IntPtr.Zero)Native.PostMessage(host,CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);
+     if(host!=IntPtr.Zero){
+      // Wait for the running instance to exit so MSI can remove CPAQuota.exe without a files-in-use prompt.
+      uint pid;Native.GetWindowThreadProcessId(host,out pid);System.Diagnostics.Process running=null;
+      try{if(pid!=0&&pid!=(uint)System.Diagnostics.Process.GetCurrentProcess().Id)running=System.Diagnostics.Process.GetProcessById((int)pid);}catch(ArgumentException){}
+      Native.PostMessage(host,CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);
+      if(running!=null)using(running){if(!running.WaitForExit(8000))try{running.Kill();running.WaitForExit(2000);}catch{}}
+     }
      using(var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true)){
       string expected="\""+Application.ExecutablePath+"\" --background";
       if(key!=null&&String.Equals(key.GetValue("CPAQuotaTaskbar") as string,expected,StringComparison.OrdinalIgnoreCase))key.DeleteValue("CPAQuotaTaskbar",false);
@@ -146,14 +158,34 @@ namespace CpaTaskbar {
     if(args.Contains("--exit")){Native.PostMessage(new IntPtr(0xffff),CommandHost.ExitMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
     bool created;using(var mutex=new Mutex(true,@"Local\CPAQuotaTaskbar."+System.Security.Principal.WindowsIdentity.GetCurrent().User.Value,out created)){
      if(!created){var host=Native.FindWindow(null,CommandHost.InstanceCaption);Native.PostMessage(host==IntPtr.Zero?new IntPtr(0xffff):host,args.Contains("--details")?CommandHost.DetailsMessage:CommandHost.OpenMessage,IntPtr.Zero,IntPtr.Zero);return 0;}
-     Application.ThreadException+=(s,e)=>Log("界面发生异常，可退出后重新启动。");
-     AppConfig.InitializeStorage();var c=AppConfig.Load();Application.Run(new TaskbarApp(c,args.Contains("--details")));GC.KeepAlive(mutex);
+     Application.ThreadException+=(s,e)=>Log("界面发生异常",e.Exception);
+     AppDomain.CurrentDomain.UnhandledException+=(s,e)=>Log("未处理异常",e.ExceptionObject as Exception);
+     TaskScheduler.UnobservedTaskException+=(s,e)=>{Log("后台任务异常",e.Exception);e.SetObserved();};
+     AppConfig.InitializeStorage();var c=AppConfig.Load();
+     if(AppConfig.LoadWarning!=""){Log(AppConfig.LoadWarning);MessageBox.Show(AppConfig.LoadWarning,"CPA 状态栏",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+     Application.Run(new TaskbarApp(c,args.Contains("--details")));GC.KeepAlive(mutex);
     }
     return 0;
    }catch(Exception e){
-    Log(e.Message);MessageBox.Show("CPA状态栏启动失败："+e.Message,"CPA 状态栏",MessageBoxButtons.OK,MessageBoxIcon.Error);return 1;
+    Log("启动失败",e);MessageBox.Show("CPA状态栏启动失败："+e.Message,"CPA 状态栏",MessageBoxButtons.OK,MessageBoxIcon.Error);return 1;
    }
   }
-  static void Log(string message){try{Directory.CreateDirectory(Path.Combine(AppConfig.Folder,"logs"));File.AppendAllText(Path.Combine(AppConfig.Folder,"logs","desktop.log"),DateTime.Now.ToString("s")+" "+message+Environment.NewLine);}catch{}}
+  public static string Version{get{return typeof(Program).Assembly.GetName().Version.ToString(3);}}
+  static readonly object logGate=new object();
+  static string lastLogKey="";static long lastLogAt;static int suppressed;
+  // Writes the full exception. The same message repeating within 60 seconds is counted, not
+  // re-written, and the log is rotated at 1 MB so a per-second failure cannot fill the disk.
+  internal static void Log(string message,Exception error=null){
+   try{
+    lock(logGate){
+     string key=message+"|"+(error==null?"":error.GetType().FullName+":"+error.Message);long now=J.Now;
+     if(key==lastLogKey&&now-lastLogAt<60000){suppressed++;return;}
+     string folder=Path.Combine(AppConfig.Folder,"logs");Directory.CreateDirectory(folder);string file=Path.Combine(folder,"desktop.log");
+     var info=new FileInfo(file);if(info.Exists&&info.Length>1024*1024){string old=file+".1";if(File.Exists(old))File.Delete(old);File.Move(file,old);}
+     string text=(suppressed>0?DateTime.Now.ToString("s")+" 上一条重复 "+suppressed+" 次"+Environment.NewLine:"")+DateTime.Now.ToString("s")+" "+message+(error==null?"":Environment.NewLine+error)+Environment.NewLine;
+     File.AppendAllText(file,text);lastLogKey=key;lastLogAt=now;suppressed=0;
+    }
+   }catch{}
+  }
  }
 }
