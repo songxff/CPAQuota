@@ -76,6 +76,29 @@ namespace CpaTaskbar
             return dark ? Color.FromArgb(151, 227, 195) : Color.FromArgb(28, 119, 80);
         }
 
+        /// <summary>
+        /// Dark colours for the panel. Adaptive text on a transparent panel follows the sampled
+        /// taskbar pixels instead of the registry theme.
+        /// </summary>
+        public static bool StripDark(AppConfig c)
+        {
+            if (c.TextColorMode == "adaptive" && c.TransparentBackground && TaskbarBackground.Dark.HasValue)
+                return TaskbarBackground.Dark.Value;
+            return Dark(c);
+        }
+
+        /// <summary>Value and label colours: theme defaults, or the custom colour for both.</summary>
+        public static void TextColors(AppConfig c, bool dark, out Color foreground, out Color muted)
+        {
+            if (c.TextColorMode == "custom" && AppConfig.IsRgb(c.TextColor))
+            {
+                foreground = muted = ColorTranslator.FromHtml(c.TextColor);
+                return;
+            }
+            foreground = dark ? Color.FromArgb(244, 245, 247) : Color.FromArgb(20, 23, 27);
+            muted = dark ? Color.FromArgb(211, 215, 221) : Color.FromArgb(52, 55, 60);
+        }
+
         public static Color StripSurface(bool dark, bool hover)
         {
             if (hover)
@@ -220,15 +243,17 @@ namespace CpaTaskbar
         /// <summary>Paints the taskbar panel. With a transparent background the surface is alpha 1/255.</summary>
         public static void Strip(Graphics g, Rectangle rect, Snapshot s, AppConfig c, bool hover = false)
         {
-            bool dark = Dark(c);
+            bool dark = StripDark(c);
+            Color foreground, muted;
+            TextColors(c, dark, out foreground, out muted);
             var paint = new StripPaint
             {
                 G = g,
                 Config = c,
                 Dark = dark,
                 Surface = StripSurface(dark, hover),
-                Foreground = dark ? Color.FromArgb(244, 245, 247) : Color.FromArgb(20, 23, 27),
-                Muted = dark ? Color.FromArgb(211, 215, 221) : Color.FromArgb(52, 55, 60),
+                Foreground = foreground,
+                Muted = muted,
             };
             // Fully transparent pixels pass mouse input through layered windows. A 1/255
             // alpha surface stays visually transparent while keeping the entire panel clickable.
@@ -330,7 +355,8 @@ namespace CpaTaskbar
         /// <summary>Muted label colour, adjusted for contrast when it sits on a thick progress fill.</summary>
         static Color LabelColor(StripPaint paint, QuotaWindow window)
         {
-            if (!QuotaColors.ThickBackground(paint.Config))
+            // A custom colour is used as chosen.
+            if (!QuotaColors.ThickBackground(paint.Config) || paint.Config.TextColorMode == "custom")
                 return paint.Muted;
             Color fill = QuotaColors.ProgressSurface(paint.Surface, window, paint.Fresh, paint.Config, paint.Dark);
             return QuotaColors.Readable(paint.Muted, paint.Surface, fill, paint.Dark);

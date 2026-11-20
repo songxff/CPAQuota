@@ -23,6 +23,7 @@ namespace CpaTaskbar
         public const string DefaultAntigravityUserAgent = "antigravity/hub/2.23.0 darwin/arm64";
 
         const string DefaultLowColor = "#50D39A", DefaultMediumColor = "#F1C553", DefaultHighColor = "#F17788";
+        public const string DefaultTextColor = "#FFFFFF";
         const string AutostartValueName = "CPAQuotaTaskbar";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -52,6 +53,9 @@ namespace CpaTaskbar
         public bool TransparentBackground = true;
         /// <summary>thick | thin</summary>
         public string ProgressStyle = "thick";
+        /// <summary>theme (follow Theme) | adaptive (sample the taskbar behind the panel) | custom (TextColor)</summary>
+        public string TextColorMode = "theme";
+        public string TextColor = DefaultTextColor;
 
         // Quota colours, chosen by used percentage.
         /// <summary>default | background | numbers | both</summary>
@@ -178,6 +182,10 @@ namespace CpaTaskbar
                 YellowUsedPercent = 50;
                 RedUsedPercent = 90;
             }
+            if (!new[] { "theme", "adaptive", "custom" }.Contains(TextColorMode))
+                TextColorMode = "theme";
+            if (!IsRgb(TextColor))
+                TextColor = DefaultTextColor;
             if (!IsRgb(LowUsageColor))
                 LowUsageColor = DefaultLowColor;
             if (!IsRgb(MediumUsageColor))
@@ -186,7 +194,7 @@ namespace CpaTaskbar
                 HighUsageColor = DefaultHighColor;
         }
 
-        static bool IsRgb(string value)
+        public static bool IsRgb(string value)
         {
             return value != null && value.Length == 7 && value[0] == '#'
                 && value.Substring(1).All(ch => "0123456789ABCDEFabcdef".IndexOf(ch) >= 0);

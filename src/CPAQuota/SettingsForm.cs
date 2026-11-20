@@ -44,6 +44,7 @@ namespace CpaTaskbar
         // Appearance and startup tab.
         readonly ComboBox progressStyle = new ComboBox { Name = "quotaProgressStyle", AccessibleName = "进度条样式", DropDownStyle = ComboBoxStyle.DropDownList };
         readonly ComboBox theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        readonly TextColorPicker textColor = new TextColorPicker { Name = "textColor" };
         readonly CheckBox transparent = new CheckBox { Name = "transparentBackground", Text = "透明背景（融入任务栏）", AutoSize = true };
         readonly NumericUpDown width = new NumericUpDown { Name = "taskbarWidth", Minimum = 80, Maximum = 840 };
         readonly NumericUpDown offset = new NumericUpDown { Name = "taskbarOffset", Minimum = 0, Maximum = 800 };
@@ -227,6 +228,8 @@ namespace CpaTaskbar
             progressStyle.Items.AddRange(new object[] { "粗进度条", "细进度条" });
             SettingsLayout.Add(grid, "进度条样式", progressStyle);
             SettingsLayout.Add(grid, "主题", theme);
+            SettingsLayout.Add(grid, "文字颜色", textColor);
+            SettingsLayout.Hint(grid, "文字看不清时可选“自适应任务栏背景”（按面板后方的实际颜色自动选深色或浅色文字），或自定义色号，可用色盘或取色器选取。");
             SettingsLayout.Add(grid, "背景", transparent);
             SettingsLayout.Add(grid, "宽度（像素）", width);
             SettingsLayout.Add(grid, "左移（像素）", offset);
@@ -299,6 +302,8 @@ namespace CpaTaskbar
             SetColor(mediumColor, c.MediumUsageColor);
             SetColor(highColor, c.HighUsageColor);
             theme.SelectedIndex = IndexOf(Themes, c.Theme);
+            textColor.CustomColor = c.TextColor;
+            textColor.Mode = c.TextColorMode;
             progressStyle.SelectedIndex = IndexOf(ProgressStyles, c.ProgressStyle);
         }
 
@@ -317,6 +322,7 @@ namespace CpaTaskbar
             foreach (var check in new[] { transparent, single, used, historyBar })
                 check.CheckedChanged += changed;
             model.TextChanged += changed;
+            textColor.Changed += changed;
 
             cpamp.CheckedChanged += (s, e) =>
             {
@@ -437,6 +443,8 @@ namespace CpaTaskbar
             c.FontSize = (int)fontSize.Value;
             c.Theme = Themes[Math.Max(0, theme.SelectedIndex)];
             c.TransparentBackground = transparent.Checked;
+            c.TextColorMode = textColor.Mode;
+            c.TextColor = textColor.CustomColor;
             c.ProgressStyle = ProgressStyles[Math.Max(0, progressStyle.SelectedIndex)];
             c.QuotaDisplayMode = DisplayModes[Math.Max(0, quotaDisplay.SelectedIndex)];
             if (accounts.Items.Count > 0)

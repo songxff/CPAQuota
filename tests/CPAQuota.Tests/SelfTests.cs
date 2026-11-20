@@ -79,6 +79,7 @@ namespace CpaTaskbar
             });
             AggregationTests.Run(test);
             ProgressStyleTests.Run(test);
+            TextColorTests.Run(test);
             test("Windows 11及未知系统不嵌入旧任务栏，Windows 10保留嵌入", () =>
             {
                 var bar = new Rectangle(0, 1040, 1920, 40);

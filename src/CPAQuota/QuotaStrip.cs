@@ -98,6 +98,8 @@ namespace CpaTaskbar
                     Native.SetWindowLong(Handle, Native.GWL_EXSTYLE, next);
                 UpdateShape();
             }
+            if (Config.TextColorMode == "adaptive" && !TaskbarBackground.Current.HasValue)
+                SampleBackground(true);
             State = s;
             UpdateTooltip(s);
             clockKey = ClockKey();
@@ -107,8 +109,20 @@ namespace CpaTaskbar
         /// <summary>Called every second; repaints only when freshness, the summary or a reset text changed.</summary>
         public void RefreshClock()
         {
-            if (ClockKey() != clockKey)
+            bool backgroundChanged = SampleBackground(false) && Config.TextColorMode == "adaptive";
+            if (backgroundChanged || ClockKey() != clockKey)
                 RefreshState(State);
+        }
+
+        /// <summary>
+        /// Samples the taskbar behind a transparent panel (throttled) for adaptive text and the
+        /// settings preview. Returns true when the background switched between dark and light.
+        /// </summary>
+        bool SampleBackground(bool force)
+        {
+            if (!IsHandleCreated || !Visible || Config == null || !Config.TransparentBackground || Width < 1 || Height < 1)
+                return false;
+            return TaskbarBackground.Sample(RectangleToScreen(ClientRectangle), force);
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -267,11 +281,22 @@ namespace CpaTaskbar
                 var saved = e.Graphics.Save();
                 using (var shape = QuotaColors.Rounded(bounds, Math.Max(5, height / 7)))
                     e.Graphics.SetClip(shape, CombineMode.Intersect);
-                using (var surface = new SolidBrush(Look.StripSurface(Look.Dark(Config), false)))
+                using (var surface = new SolidBrush(Surface(Config)))
                     e.Graphics.FillRectangle(surface, bounds);
                 e.Graphics.DrawImageUnscaled(image, 0, 4);
                 e.Graphics.Restore(saved);
             }
+        }
+
+        /// <summary>
+        /// The preview background: with custom or adaptive text on a transparent panel, the sampled
+        /// taskbar colour shows how the text will really look; otherwise the theme surface.
+        /// </summary>
+        static Color Surface(AppConfig c)
+        {
+            if (c.TransparentBackground && c.TextColorMode != "theme" && TaskbarBackground.Current.HasValue)
+                return TaskbarBackground.Current.Value;
+            return Look.StripSurface(Look.StripDark(c), false);
         }
     }
 }
